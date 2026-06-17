@@ -1,0 +1,1263 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Family Feud — Moderator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .ans-revealed {
+            background: linear-gradient(90deg, #92400e, #d97706);
+            border-color: #b45309;
+        }
+
+        .phase-enter {
+            animation: phaseIn 0.2s ease-out;
+        }
+
+        @keyframes phaseIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+    </style>
+</head>
+
+<body class="bg-gray-950 text-gray-100 min-h-screen flex flex-col">
+
+    <!-- PERSISTENT HEADER -->
+    <header class="bg-gray-900 border-b border-gray-800 sticky top-0 z-10">
+        <!-- Row 1: scores + round/phase -->
+        <div class="px-4 pt-2.5 pb-1.5 flex items-center justify-between gap-2">
+            <div class="flex items-center gap-3 min-w-0">
+                <div class="min-w-0">
+                    <p class="text-xs text-gray-500 leading-none truncate max-w-[80px]" id="hdrLabel1">Team 1</p>
+                    <p class="text-2xl font-black text-white leading-none" id="hdrScore1">0</p>
+                </div>
+                <span class="text-gray-600 text-xs font-light flex-shrink-0">vs</span>
+                <div class="min-w-0">
+                    <p class="text-xs text-gray-500 leading-none truncate max-w-[80px]" id="hdrLabel2">Team 2</p>
+                    <p class="text-2xl font-black text-white leading-none" id="hdrScore2">0</p>
+                </div>
+            </div>
+            <div class="text-right flex-shrink-0">
+                <p class="text-xs text-gray-500">Round <span id="hdrRound" class="text-white font-bold">1</span></p>
+                <span id="hdrPhase"
+                    class="inline-block text-xs font-bold px-2 py-0.5 rounded-full bg-gray-700 text-gray-300 uppercase tracking-wider">SETUP</span>
+            </div>
+        </div>
+        <!-- Row 2: action buttons — always fully visible -->
+        <div class="px-3 pb-2 pt-1.5 flex items-center gap-1.5 border-t border-gray-800">
+            <button id="btnRevert" disabled
+                class="flex-1 bg-gray-800 hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed text-white text-xs px-2 py-2 rounded-lg transition-colors font-semibold">
+                ↩ Revert (<span id="revertCount">0</span>)
+            </button>
+            <button id="btnToggleLog"
+                class="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs px-2 py-2 rounded-lg transition-colors font-semibold">
+                📋 Log
+            </button>
+            <button id="btnEndGame"
+                class="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs px-2 py-2 rounded-lg transition-colors font-semibold">
+                🏁 End
+            </button>
+            <button id="btnReset"
+                class="flex-1 bg-red-950 hover:bg-red-900 text-red-400 text-xs px-2 py-2 rounded-lg transition-colors font-semibold">
+                ⟳ Reset
+            </button>
+        </div>
+    </header>
+
+    <!-- PHASE CARD -->
+    <main class="flex-1 flex justify-center px-4 py-6">
+        <div id="phaseCard" class="w-full max-w-xl"></div>
+    </main>
+
+    <!-- LOG DRAWER -->
+    <div id="logDrawer" class="hidden fixed inset-x-0 bottom-0 z-30 bg-gray-900 border-t border-gray-700">
+        <div class="flex items-center justify-between px-4 py-2 border-b border-gray-800">
+            <span class="text-xs text-gray-400 uppercase tracking-wider font-semibold">Game Log</span>
+            <button id="btnCloseLog" class="text-gray-500 hover:text-white text-xs px-2 py-1">✕ Close</button>
+        </div>
+        <div id="gameLog" class="overflow-y-auto max-h-44 p-4 space-y-0.5 text-xs text-gray-400 font-mono">
+            <p class="text-gray-600 italic">Ready...</p>
+        </div>
+    </div>
+
+    <script type="module">
+        import {
+            initDB, loadState, saveState, broadcast, subscribe, subscribeActions,
+            getAllQuestions, saveGameHistory, defaultState, sampleQuestions, PHASES
+        } from './game.js';
+
+        const buzzSound = new Audio("sounds/buzzer-or-wrong-answer.mp3");
+        const correctSound = new Audio("sounds/correct-answer.mp3");
+
+        function playSound(sound) {
+            sound.pause();
+
+            if (sound === buzzSound) {
+                sound.currentTime = 0.25; // skip first 250 ms
+
+                sound.play();
+
+                // stop 1 second later
+                setTimeout(() => {
+                    sound.pause();
+                }, 1060);
+            } else {
+                sound.currentTime = 0;
+                sound.play();
+            }
+        }
+
+        let state = loadState();
+        let allQuestions = [];
+        let historyStack = [];
+        const MAX_HISTORY = 25;
+        let namesSet = false;
+        let gameStarted = false;
+        let uiStep = 'ROUND_SETUP';
+
+        const PHASE_COLORS = {
+            TEAM_SETUP: 'bg-gray-700 text-gray-300',
+            ROUND_SETUP: 'bg-gray-700 text-gray-300',
+            QUESTION_SELECTION: 'bg-gray-700 text-gray-300',
+            BUZZER_WAITING: 'bg-orange-600 text-white',
+            FACE_OFF: 'bg-orange-600 text-white',
+            PLAY_OR_PASS: 'bg-orange-500 text-white',
+            PLAY: 'bg-green-700 text-white',
+            STEAL: 'bg-purple-700 text-white',
+            ROUND_COMPLETE: 'bg-blue-700 text-white',
+            GAME_OVER: 'bg-yellow-500 text-gray-900',
+            FAST_MONEY: 'bg-pink-700 text-white',
+        };
+        const PHASE_LABELS = {
+            TEAM_SETUP: 'Setup', ROUND_SETUP: 'Setup', QUESTION_SELECTION: 'Setup',
+            BUZZER_WAITING: 'Face-Off', FACE_OFF: 'Face-Off', PLAY_OR_PASS: 'Play / Pass',
+            PLAY: 'Playing', STEAL: 'Steal', ROUND_COMPLETE: 'Round Over',
+            GAME_OVER: 'Game Over', FAST_MONEY: 'Fast Money',
+        };
+
+        // ── HELPERS ──────────────────────────────────────────────────────────────────
+        function pushHistory() {
+            historyStack.push(JSON.parse(JSON.stringify(state)));
+            if (historyStack.length > MAX_HISTORY) historyStack.shift();
+        }
+        function getTeamName(t) { return (state.teamNames && state.teamNames[t]) || t; }
+        function otherTeam(t) { return t === 'team1' ? 'team2' : 'team1'; }
+
+        function toast(msg, type = 'info') {
+            const bg = { info: 'bg-blue-700', error: 'bg-red-700', success: 'bg-green-700', warn: 'bg-yellow-600' };
+            const el = document.createElement('div');
+            el.className = `fixed top-16 left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-xl text-white font-semibold text-sm shadow-2xl pointer-events-none transition-opacity ${bg[type] || bg.info}`;
+            el.textContent = msg;
+            document.body.appendChild(el);
+            setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 400); }, 2600);
+        }
+
+        function log(msg) {
+            const c = document.getElementById('gameLog');
+            const p = document.createElement('p');
+            const t = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            p.textContent = `[${t}] ${msg}`;
+            c.prepend(p);
+        }
+
+        function syncAndBroadcast() {
+            saveState(state);
+            broadcast(state);
+            render();
+        }
+
+        function revealAllRemaining() {
+            if (!state.currentQuestion) return;
+            state.currentQuestion.answers.forEach((a, i) => {
+                if (!a.revealed) {
+                    a.revealed = true;
+                    if (!state.revealedAnswers.includes(i)) state.revealedAnswers.push(i);
+                }
+            });
+        }
+
+        // ── INIT ─────────────────────────────────────────────────────────────────────
+        async function init() {
+            subscribe(newState => { state = newState; render(); });
+            subscribeActions(action => {
+                if (action.type === 'BUZZ' && state.phase === PHASES.FACE_OFF && !state.faceOffFirstTeam) {
+                    setFaceOffFirstTeam(action.team);
+                }
+                if (action.type === 'PLAY_OR_PASS' && state.phase === PHASES.FACE_OFF_ANSWER) {
+                    if (action.choice === 'play') faceOffWinnerPlays();
+                    else faceOffWinnerPasses();
+                }
+            });
+
+            namesSet = state.teamNames.team1 !== 'Team 1' || state.teamNames.team2 !== 'Team 2'
+                || state.phase !== PHASES.IDLE || state.round > 1 || !!state.currentQuestion;
+            gameStarted = state.phase !== PHASES.IDLE || state.round > 1 || !!state.currentQuestion;
+
+            render();
+
+            try {
+                await initDB();
+                allQuestions = await getAllQuestions();
+            } catch (e) {
+                console.warn('SheetDB unavailable, using samples', e);
+                allQuestions = sampleQuestions.map(q => ({
+                    ...q, answers: q.answers.map(a => ({ ...a, revealed: false }))
+                }));
+            }
+            populateQuestionSelect();
+            render();
+            log('Moderator ready.');
+        }
+
+        function populateQuestionSelect() {
+            const sel = document.getElementById('questionSelect');
+            if (!sel) return;
+            const prev = sel.value;
+            sel.innerHTML = '<option value="">-- Select a question --</option>';
+            allQuestions.forEach(q => {
+                const o = document.createElement('option');
+                o.value = q.id;
+                o.textContent = `${q.id}. ${q.question}`;
+                sel.appendChild(o);
+            });
+            if (prev) sel.value = prev;
+        }
+
+        // ── FACE-OFF ─────────────────────────────────────────────────────────────────
+        function setFaceOffFirstTeam(team) {
+            playSound(buzzSound);
+            pushHistory();
+            state.faceOffFirstTeam = team;
+            log(`${getTeamName(team)} buzzed first.`);
+            syncAndBroadcast();
+        }
+
+        function recordFaceOffAnswer(team, ansIdx) {
+            pushHistory();
+            state.faceOffAnswers[team] = ansIdx;
+
+            if (ansIdx !== 'wrong') {
+                const ans = state.currentQuestion.answers[ansIdx];
+                if (!state.revealedAnswers.includes(ansIdx)) {
+                    state.currentQuestion.answers[ansIdx].revealed = true;
+                    state.revealedAnswers.push(ansIdx);
+                    const pts = ans.points * (state.pointMultiplier || 1);
+                    state.roundPoints += pts;
+                    log(`${getTeamName(team)}: "${ans.text}" (${ans.points}×${state.pointMultiplier || 1}=${pts} pts)`);
+                }
+                if (ansIdx === 0) {
+                    playSound(buzzSound);
+                    log(`Top answer! ${getTeamName(team)} wins the face-off!`);
+                    completeFaceOff(team);
+                    syncAndBroadcast();
+                    return;
+                }
+            } else {
+                playSound(buzzSound);
+                log(`${getTeamName(team)}: wrong answer.`);
+            }
+
+            const firstTeam = state.faceOffFirstTeam;
+            const secondTeam = otherTeam(firstTeam);
+
+            if (team === secondTeam) {
+                const firstAns = state.faceOffAnswers[firstTeam];
+                const firstPts = (firstAns !== null && firstAns !== 'wrong') ? state.currentQuestion.answers[firstAns].points : 0;
+                const secondPts = (ansIdx !== 'wrong') ? state.currentQuestion.answers[ansIdx].points : 0;
+                const winner = (firstPts >= secondPts) ? firstTeam : secondTeam;
+                log(`Face-off: ${getTeamName(firstTeam)} ${firstPts}pts vs ${getTeamName(secondTeam)} ${secondPts}pts — ${getTeamName(winner)} wins!`);
+                completeFaceOff(winner);
+            }
+
+            syncAndBroadcast();
+        }
+
+        function completeFaceOff(winner) {
+            state.faceOffWinner = winner;
+            state.currentTeam = winner;
+            state.phase = PHASES.FACE_OFF_ANSWER;
+            state.answerEnabled = false;
+        }
+
+        // ── PLAY / PASS ───────────────────────────────────────────────────────────────
+        function faceOffWinnerPlays() {
+            pushHistory();
+            state.currentTeam = state.faceOffWinner;
+            state.phase = PHASES.PLAY;
+            state.strikes = 0;
+            state.answerEnabled = true;
+            log(`${getTeamName(state.currentTeam)} chooses to PLAY.`);
+            syncAndBroadcast();
+        }
+
+        function faceOffWinnerPasses() {
+            pushHistory();
+            state.currentTeam = otherTeam(state.faceOffWinner);
+            state.phase = PHASES.PLAY;
+            state.strikes = 0;
+            state.answerEnabled = true;
+            log(`${getTeamName(state.faceOffWinner)} passes → ${getTeamName(state.currentTeam)} plays.`);
+            syncAndBroadcast();
+        }
+
+        // ── REVEAL ANSWER ─────────────────────────────────────────────────────────────
+        window.revealAnswer = function (idx) {
+            if (!state.currentQuestion || state.currentQuestion.answers[idx].revealed) return;
+            playSound(correctSound);
+            pushHistory();
+            state.currentQuestion.answers[idx].revealed = true;
+            if (!state.revealedAnswers.includes(idx)) {
+                state.revealedAnswers.push(idx);
+                const pts = state.currentQuestion.answers[idx].points * (state.pointMultiplier || 1);
+                state.roundPoints += pts;
+                log(`✓ "${state.currentQuestion.answers[idx].text}" (+${pts} pts)`);
+            }
+            if (state.currentQuestion.answers.every(a => a.revealed) &&
+                (state.phase === PHASES.PLAY || state.phase === PHASES.STEAL)) {
+                state.scores[state.currentTeam] += state.roundPoints;
+                log(`All answers revealed! ${getTeamName(state.currentTeam)} earns ${state.roundPoints} pts.`);
+                state.roundPoints = 0;
+                state.phase = PHASES.ROUND_COMPLETE;
+            }
+            syncAndBroadcast();
+        };
+
+        // ── STRIKES ───────────────────────────────────────────────────────────────────
+        function addStrike() {
+            if (state.strikes >= 3) return;
+            playSound(buzzSound);
+            pushHistory();
+            state.strikes++;
+            log(`Strike ${state.strikes}/3`);
+            if (state.strikes >= 3 && state.phase === PHASES.PLAY) {
+                const stealer = otherTeam(state.currentTeam);
+                state.phase = PHASES.STEAL;
+                state.currentTeam = stealer;
+                state.strikes = 0;
+                state.answerEnabled = true;
+                log(`3 strikes! ${getTeamName(stealer)} can steal!`);
+            }
+            syncAndBroadcast();
+        }
+
+        // ── STEAL ─────────────────────────────────────────────────────────────────────
+        function stealCorrect() {
+            playSound(correctSound);
+            pushHistory();
+            revealAllRemaining();
+            state.scores[state.currentTeam] += state.roundPoints;
+            log(`${getTeamName(state.currentTeam)} steals! +${state.roundPoints} pts`);
+            state.roundPoints = 0;
+            state.phase = PHASES.ROUND_COMPLETE;
+            syncAndBroadcast();
+        }
+
+        function stealWrong() {
+            playSound(buzzSound);
+            pushHistory();
+            revealAllRemaining();
+            const orig = otherTeam(state.currentTeam);
+            state.scores[orig] += state.roundPoints;
+            log(`Steal failed. ${getTeamName(orig)} keeps ${state.roundPoints} pts.`);
+            state.roundPoints = 0;
+            state.phase = PHASES.ROUND_COMPLETE;
+            syncAndBroadcast();
+        }
+
+        // ── NEXT ROUND ────────────────────────────────────────────────────────────────
+        function nextRound() {
+            pushHistory();
+            state.round++;
+            state.phase = PHASES.IDLE;
+            state.currentQuestion = null;
+            state.revealedAnswers = [];
+            state.strikes = 0;
+            state.roundPoints = 0;
+            state.currentTeam = null;
+            state.buzzerWinner = null;
+            state.buzzerEnabled = false;
+            state.answerEnabled = false;
+            state.faceOffAnswers = { team1: null, team2: null };
+            state.faceOffFirstTeam = null;
+            state.faceOffWinner = null;
+            state.pointMultiplier = 1;
+            uiStep = 'ROUND_SETUP';
+            log(`Round ${state.round} starting.`);
+            syncAndBroadcast();
+        }
+
+        // ── FAST MONEY HELPERS ────────────────────────────────────────────────────────
+        function fmInit(fm) {
+            if (!fm.selectedQuestions) fm.selectedQuestions = [];
+            if (!fm.fmPhase) fm.fmPhase = 'SETUP';
+            if (!fm.player1) fm.player1 = { answers: [], score: 0 };
+            if (!fm.player2) fm.player2 = { answers: [], score: 0 };
+        }
+
+        function fmAdvance(playerNum) {
+            const fm = state.fastMoney;
+            const nextIdx = fm.currentQuestionIdx + 1;
+            if (nextIdx < fm.selectedQuestions.length) {
+                fm.currentQuestionIdx = nextIdx;
+            } else if (playerNum === 1) {
+                fm.fmPhase = 'PLAYER2_PREP';
+                fm.player1.score = fm.player1.answers.reduce((s, a) => s + (a ? a.points : 0), 0);
+            } else {
+                fm.player1.score = fm.player1.answers.reduce((s, a) => s + (a ? a.points : 0), 0);
+                fm.player2.score = fm.player2.answers.reduce((s, a) => s + (a ? a.points : 0), 0);
+                fm.totalScore = fm.player1.score + fm.player2.score;
+                fm.fmPhase = 'COMPLETE';
+            }
+        }
+
+        // ── WINDOW CALLBACKS ──────────────────────────────────────────────────────────
+        window._faceOffPick = recordFaceOffAnswer;
+        window._plays = faceOffWinnerPlays;
+        window._passes = faceOffWinnerPasses;
+        window._nextRound = nextRound;
+        window._stealCorrect = stealCorrect;
+        window._stealWrong = stealWrong;
+        window._addStrike = addStrike;
+        window._removeStrike = () => { if (state.strikes > 0) { pushHistory(); state.strikes--; syncAndBroadcast(); } };
+        window._clearStrikes = () => { pushHistory(); state.strikes = 0; syncAndBroadcast(); };
+        window._backToRoundSetup = () => { uiStep = 'ROUND_SETUP'; render(); };
+
+        window._selectRoundType = (type) => {
+            if (type === 'vs') {
+                uiStep = 'QUESTION_SELECTION';
+                render();
+            } else {
+                pushHistory();
+                state.fastMoney = {
+                    ...defaultState().fastMoney,
+                    fmPhase: 'SETUP',
+                    selectedQuestions: [],
+                    currentQuestionIdx: 0,
+                };
+                state.phase = PHASES.FAST_MONEY;
+                log('Fast Money mode selected.');
+                syncAndBroadcast();
+            }
+        };
+
+        window._toggleFMQuestion = (id) => {
+            const fm = state.fastMoney;
+            fmInit(fm);
+            const idx = fm.selectedQuestions.findIndex(q => q.id === id);
+            if (idx >= 0) {
+                fm.selectedQuestions.splice(idx, 1);
+            } else if (fm.selectedQuestions.length < 5) {
+                const q = allQuestions.find(q => q.id === id);
+                if (q) fm.selectedQuestions.push({ ...q, answers: q.answers.map(a => ({ ...a, revealed: false })) });
+            }
+            render(); // local only — not synced until Start pressed
+        };
+
+        window._startFastMoney = () => {
+            const fm = state.fastMoney;
+            fmInit(fm);
+            if (!fm.selectedQuestions.length) { toast('Select at least 1 question.', 'error'); return; }
+            pushHistory();
+            fm.fmPhase = 'PLAYER1';
+            fm.currentQuestionIdx = 0;
+            fm.player1.answers = new Array(fm.selectedQuestions.length).fill(null);
+            fm.player2.answers = new Array(fm.selectedQuestions.length).fill(null);
+            fm.player1.score = 0;
+            fm.player2.score = 0;
+            fm.totalScore = 0;
+            log(`Fast Money started — ${fm.selectedQuestions.length} questions, Player 1 begins!`);
+            syncAndBroadcast();
+        };
+
+        window._fmSelectAnswer = (playerNum, qIdx, ansIdx) => {
+            const fm = state.fastMoney;
+            const ans = fm.selectedQuestions[qIdx].answers[ansIdx];
+            let points = ans.points;
+            let isDuplicate = false;
+            if (playerNum === 2) {
+                const p1Ans = fm.player1.answers[qIdx];
+                if (p1Ans && p1Ans.ansIdx === ansIdx) { isDuplicate = true; points = 0; }
+            }
+            pushHistory();
+            const record = { ansIdx, text: ans.text, points, isDuplicate };
+            if (playerNum === 1) fm.player1.answers[qIdx] = record;
+            else fm.player2.answers[qIdx] = record;
+            if (isDuplicate) toast('Duplicate answer — 0 points!', 'warn');
+            log(`P${playerNum} Q${qIdx + 1}: "${ans.text}" — ${isDuplicate ? 'DUPE 0' : points} pts`);
+            fmAdvance(playerNum);
+            syncAndBroadcast();
+        };
+
+        window._fmPass = (playerNum, qIdx) => {
+            const fm = state.fastMoney;
+            pushHistory();
+            const record = { ansIdx: null, text: 'No answer', points: 0, isDuplicate: false };
+            if (playerNum === 1) fm.player1.answers[qIdx] = record;
+            else fm.player2.answers[qIdx] = record;
+            log(`P${playerNum} Q${qIdx + 1}: Pass — 0 pts`);
+            fmAdvance(playerNum);
+            syncAndBroadcast();
+        };
+
+        window._startPlayer2 = () => {
+            pushHistory();
+            state.fastMoney.fmPhase = 'PLAYER2';
+            state.fastMoney.currentQuestionIdx = 0;
+            log('Fast Money — Player 2 begins!');
+            syncAndBroadcast();
+        };
+
+        window._backFromFastMoney = () => {
+            pushHistory();
+            state.phase = PHASES.IDLE;
+            state.fastMoney = { ...defaultState().fastMoney };
+            uiStep = 'ROUND_SETUP';
+            log('Fast Money cancelled.');
+            syncAndBroadcast();
+        };
+
+        window._endFastMoney = () => {
+            pushHistory();
+            state.phase = PHASES.GAME_OVER;
+            state.winner = state.scores.team1 > state.scores.team2 ? 'team1' :
+                state.scores.team2 > state.scores.team1 ? 'team2' : null;
+            state.fastMoney.active = false;
+            log('Fast Money complete — Game over!');
+            saveGameHistory({ scores: state.scores, teamNames: state.teamNames, round: state.round });
+            syncAndBroadcast();
+        };
+
+        // ── STATIC HEADER BUTTON LISTENERS ───────────────────────────────────────────
+        document.getElementById('btnRevert').addEventListener('click', () => {
+            if (historyStack.length === 0) return;
+            state = historyStack.pop();
+            log('Reverted.');
+            toast('Reverted last action.', 'info');
+            syncAndBroadcast();
+        });
+
+        document.getElementById('btnToggleLog').addEventListener('click', () => {
+            document.getElementById('logDrawer').classList.toggle('hidden');
+        });
+
+        document.getElementById('btnCloseLog').addEventListener('click', () => {
+            document.getElementById('logDrawer').classList.add('hidden');
+        });
+
+        let endClickedOnce = false;
+        document.getElementById('btnEndGame').addEventListener('click', () => {
+            if (!endClickedOnce) {
+                endClickedOnce = true;
+                toast('Click End again to confirm.', 'warn');
+                setTimeout(() => { endClickedOnce = false; }, 3000);
+                return;
+            }
+            endClickedOnce = false;
+            pushHistory();
+            state.phase = PHASES.GAME_OVER;
+            state.winner = state.scores.team1 > state.scores.team2 ? 'team1' :
+                state.scores.team2 > state.scores.team1 ? 'team2' : null;
+            log(`Game over! ${state.winner ? getTeamName(state.winner) + ' wins!' : "It's a tie!"}`);
+            saveGameHistory({ scores: state.scores, teamNames: state.teamNames, round: state.round });
+            syncAndBroadcast();
+        });
+
+        let resetClickedOnce = false;
+        document.getElementById('btnReset').addEventListener('click', () => {
+            if (!resetClickedOnce) {
+                resetClickedOnce = true;
+                toast('Click Reset again to confirm full reset.', 'warn');
+                setTimeout(() => { resetClickedOnce = false; }, 3000);
+                return;
+            }
+            resetClickedOnce = false;
+            localStorage.removeItem('familyFeudState');
+            state = defaultState();
+            state.questions = allQuestions;
+            historyStack = [];
+            namesSet = false;
+            gameStarted = false;
+            uiStep = 'ROUND_SETUP';
+            log('Game fully reset.');
+            toast('Game reset.', 'success');
+            syncAndBroadcast();
+        });
+
+        // ── RENDER ────────────────────────────────────────────────────────────────────
+        function getUIStep() {
+            if (state.phase === PHASES.IDLE) {
+                if (!namesSet) return 'TEAM_SETUP';
+                return uiStep;
+            }
+            if (state.phase === PHASES.FACE_OFF)
+                return state.faceOffFirstTeam ? 'FACE_OFF' : 'BUZZER_WAITING';
+            if (state.phase === PHASES.FACE_OFF_ANSWER) return 'PLAY_OR_PASS';
+            if (state.phase === PHASES.PLAY) return 'PLAY';
+            if (state.phase === PHASES.STEAL) return 'STEAL';
+            if (state.phase === PHASES.ROUND_COMPLETE) return 'ROUND_COMPLETE';
+            if (state.phase === PHASES.GAME_OVER) return 'GAME_OVER';
+            if (state.phase === PHASES.FAST_MONEY) return 'FAST_MONEY';
+            return 'TEAM_SETUP';
+        }
+
+        function render() {
+            document.getElementById('hdrLabel1').textContent = getTeamName('team1');
+            document.getElementById('hdrLabel2').textContent = getTeamName('team2');
+            document.getElementById('hdrScore1').textContent = state.scores.team1 || 0;
+            document.getElementById('hdrScore2').textContent = state.scores.team2 || 0;
+            document.getElementById('hdrRound').textContent = state.round;
+
+            const step = getUIStep();
+            const phaseEl = document.getElementById('hdrPhase');
+            phaseEl.textContent = PHASE_LABELS[step] || step;
+            phaseEl.className = `inline-block text-xs font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${PHASE_COLORS[step] || 'bg-gray-700 text-gray-300'}`;
+
+            const rv = document.getElementById('btnRevert');
+            rv.disabled = historyStack.length === 0;
+            document.getElementById('revertCount').textContent = historyStack.length;
+
+            const renderers = {
+                TEAM_SETUP: renderTeamSetup,
+                ROUND_SETUP: renderRoundSetup,
+                QUESTION_SELECTION: renderQuestionSelection,
+                BUZZER_WAITING: renderBuzzerWaiting,
+                FACE_OFF: renderFaceOff,
+                PLAY_OR_PASS: renderPlayOrPass,
+                PLAY: renderPlay,
+                STEAL: renderSteal,
+                ROUND_COMPLETE: renderRoundComplete,
+                GAME_OVER: renderGameOver,
+                FAST_MONEY: renderFastMoney,
+            };
+            const container = document.getElementById('phaseCard');
+            container.innerHTML = '';
+            const fn = renderers[step];
+            if (fn) container.appendChild(fn());
+            if (step === 'QUESTION_SELECTION') populateQuestionSelect();
+        }
+
+        // ── PHASE RENDERERS ───────────────────────────────────────────────────────────
+
+        function renderTeamSetup() {
+            const el = document.createElement('div');
+            el.className = 'phase-enter';
+            el.innerHTML = `
+                <div class="text-center mb-8">
+                    <h1 class="text-4xl font-black text-yellow-400 tracking-tight">FAMILY FEUD</h1>
+                    <p class="text-gray-400 mt-1 text-sm">Enter team names to begin</p>
+                </div>
+                <div class="space-y-4 mb-6">
+                    <div>
+                        <label class="text-xs text-gray-400 uppercase tracking-wider mb-1.5 block">Team 1 Name</label>
+                        <input id="inp1" type="text" placeholder="e.g. The Smiths"
+                            value="${state.teamNames.team1 !== 'Team 1' ? state.teamNames.team1 : ''}"
+                            class="w-full bg-gray-800 border-2 border-gray-600 rounded-xl px-4 py-3 text-lg text-white focus:outline-none focus:border-yellow-500 transition-colors" />
+                    </div>
+                    <div>
+                        <label class="text-xs text-gray-400 uppercase tracking-wider mb-1.5 block">Team 2 Name</label>
+                        <input id="inp2" type="text" placeholder="e.g. The Johnsons"
+                            value="${state.teamNames.team2 !== 'Team 2' ? state.teamNames.team2 : ''}"
+                            class="w-full bg-gray-800 border-2 border-gray-600 rounded-xl px-4 py-3 text-lg text-white focus:outline-none focus:border-yellow-500 transition-colors" />
+                    </div>
+                </div>
+                <button id="btnSave"
+                    class="w-full bg-yellow-500 hover:bg-yellow-400 active:bg-yellow-600 text-gray-900 font-black text-xl py-5 rounded-2xl transition-colors">
+                    Start Game →
+                </button>
+            `;
+            const save = () => {
+                const t1 = el.querySelector('#inp1').value.trim();
+                const t2 = el.querySelector('#inp2').value.trim();
+                if (!t1 || !t2) { toast('Both team names are required.', 'error'); return; }
+                pushHistory();
+                state.teamNames.team1 = t1;
+                state.teamNames.team2 = t2;
+                namesSet = true;
+                gameStarted = true;
+                uiStep = 'ROUND_SETUP';
+                log(`Teams: "${t1}" vs "${t2}"`);
+                syncAndBroadcast();
+            };
+            el.querySelector('#btnSave').addEventListener('click', save);
+            el.querySelectorAll('input').forEach(i => i.addEventListener('keydown', e => { if (e.key === 'Enter') save(); }));
+            return el;
+        }
+
+        function renderRoundSetup() {
+            const el = document.createElement('div');
+            el.className = 'phase-enter';
+            el.innerHTML = `
+                <div class="text-center mb-10">
+                    <p class="text-gray-400 uppercase tracking-widest text-sm mb-2">Round</p>
+                    <p class="text-9xl font-black text-white leading-none">${state.round}</p>
+                    <p class="text-gray-500 mt-3 text-sm">${getTeamName('team1')} vs ${getTeamName('team2')}</p>
+                </div>
+                <p class="text-center text-gray-400 text-sm mb-4">Select round type</p>
+                <div class="grid grid-cols-2 gap-4">
+                    <button onclick="window._selectRoundType('vs')"
+                        class="bg-blue-700 hover:bg-blue-600 active:bg-blue-800 text-white font-black text-2xl py-10 rounded-2xl transition-colors">
+                        VS Round
+                    </button>
+                    <button onclick="window._selectRoundType('fastmoney')"
+                        class="bg-pink-700 hover:bg-pink-600 active:bg-pink-800 text-white font-black text-2xl py-10 rounded-2xl transition-colors">
+                        Fast Money
+                    </button>
+                </div>
+            `;
+            return el;
+        }
+
+        function renderQuestionSelection() {
+            const el = document.createElement('div');
+            el.className = 'phase-enter';
+            el.innerHTML = `
+                <div class="flex items-center gap-3 mb-6">
+                    <button onclick="window._backToRoundSetup()"
+                        class="text-gray-400 hover:text-white text-sm px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 transition-colors">←</button>
+                    <h2 class="text-xl font-black text-white">Round ${state.round} — Select Question</h2>
+                </div>
+                <div class="space-y-4">
+                    <div>
+                        <label class="text-xs text-gray-400 uppercase tracking-wider mb-1.5 block">Question</label>
+                        <select id="questionSelect"
+                            class="w-full bg-gray-800 border-2 border-gray-600 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-yellow-500 transition-colors">
+                            <option value="">Loading questions…</option>
+                        </select>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <label class="text-xs text-gray-400 uppercase tracking-wider">Multiplier</label>
+                        <select id="multSelect"
+                            class="bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-yellow-500">
+                            <option value="1">1×</option>
+                            <option value="2">2×</option>
+                            <option value="3">3×</option>
+                        </select>
+                    </div>
+                    <button id="btnLoad"
+                        class="w-full bg-yellow-500 hover:bg-yellow-400 active:bg-yellow-600 text-gray-900 font-black text-xl py-5 rounded-2xl transition-colors mt-2">
+                        Load Question →
+                    </button>
+                </div>
+            `;
+            const multSel = el.querySelector('#multSelect');
+            multSel.value = state.pointMultiplier || 1;
+            multSel.addEventListener('change', e => { state.pointMultiplier = parseInt(e.target.value) || 1; });
+            el.querySelector('#btnLoad').addEventListener('click', () => {
+                const sel = el.querySelector('#questionSelect');
+                const id = parseInt(sel.value);
+                if (!id) { toast('Please select a question first.', 'error'); return; }
+                const q = allQuestions.find(q => q.id === id);
+                if (!q) return;
+                pushHistory();
+                state.currentQuestion = { ...q, answers: q.answers.map(a => ({ ...a, revealed: false })) };
+                state.revealedAnswers = [];
+                state.roundPoints = 0;
+                state.strikes = 0;
+                state.phase = PHASES.FACE_OFF;
+                state.buzzerEnabled = false;
+                state.buzzerWinner = null;
+                state.faceOffAnswers = { team1: null, team2: null };
+                state.faceOffFirstTeam = null;
+                state.faceOffWinner = null;
+                state.currentTeam = null;
+                state.answerEnabled = false;
+                gameStarted = true;
+                log(`Loaded: "${q.question}" — Face-off begins!`);
+                syncAndBroadcast();
+            });
+            return el;
+        }
+
+        function renderBuzzerWaiting() {
+            const el = document.createElement('div');
+            el.className = 'phase-enter';
+            el.innerHTML = `
+                <div class="text-center mb-8">
+                    <p class="text-orange-400 uppercase tracking-widest text-xs font-bold mb-3">Face-Off</p>
+                    <p class="text-white font-bold text-2xl leading-snug italic">"${state.currentQuestion ? state.currentQuestion.question : ''}"</p>
+                </div>
+                <div class="bg-gray-900 rounded-2xl p-10 text-center border border-gray-700 mb-4">
+                    <div class="text-6xl mb-4">🔔</div>
+                    <p class="text-3xl font-black text-orange-400">Waiting for Buzz...</p>
+                    <p class="text-gray-500 text-sm mt-3">Teams press their buzzer buttons</p>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="bg-gray-800 rounded-xl p-4 text-center border border-gray-700">
+                        <p class="text-yellow-400 font-bold text-lg">${getTeamName('team1')}</p>
+                        <p class="text-gray-500 text-xs mt-0.5">Ready</p>
+                    </div>
+                    <div class="bg-gray-800 rounded-xl p-4 text-center border border-gray-700">
+                        <p class="text-blue-400 font-bold text-lg">${getTeamName('team2')}</p>
+                        <p class="text-gray-500 text-xs mt-0.5">Ready</p>
+                    </div>
+                </div>
+            `;
+            return el;
+        }
+
+        function renderFaceOff() {
+            const { faceOffFirstTeam, faceOffAnswers, currentQuestion } = state;
+            const secondTeam = otherTeam(faceOffFirstTeam);
+            let activeTeam = faceOffAnswers[faceOffFirstTeam] === null ? faceOffFirstTeam
+                : faceOffAnswers[secondTeam] === null ? secondTeam : null;
+
+            if (!activeTeam) {
+                const el = document.createElement('div');
+                el.className = 'phase-enter text-center py-8 text-gray-400';
+                el.textContent = 'Face-off resolving…';
+                return el;
+            }
+
+            const otherAnswer = faceOffAnswers[otherTeam(activeTeam)];
+            let contextHtml = '';
+            if (activeTeam === secondTeam && faceOffAnswers[faceOffFirstTeam] !== null) {
+                const fa = faceOffAnswers[faceOffFirstTeam];
+                const faText = fa === 'wrong' ? 'Not on the board'
+                    : `"${currentQuestion.answers[fa].text}" — ${currentQuestion.answers[fa].points} pts`;
+                contextHtml = `<p class="text-xs text-gray-500 text-center mb-3">${getTeamName(faceOffFirstTeam)}: ${faText}</p>`;
+            }
+
+            const btnHtml = currentQuestion.answers.map((ans, idx) => {
+                const taken = ans.revealed || (otherAnswer !== null && otherAnswer !== 'wrong' && otherAnswer === idx);
+                return `<button onclick="${taken ? '' : `window._faceOffPick('${activeTeam}', ${idx})`}" ${taken ? 'disabled' : ''}
+                    class="w-full text-left flex items-center gap-3 px-4 py-3 rounded-xl border text-base transition-colors
+                    ${taken ? 'bg-gray-800 border-gray-700 text-gray-600 cursor-not-allowed opacity-40'
+                        : 'bg-gray-700 hover:bg-gray-600 border-gray-600 text-white active:bg-gray-500'}">
+                    <span class="w-6 text-center text-sm text-gray-400">${idx + 1}</span>
+                    <span class="flex-1 font-semibold">${ans.text}</span>
+                    <span class="text-sm text-gray-400 font-bold">${ans.points}pts</span>
+                </button>`;
+            }).join('');
+
+            const el = document.createElement('div');
+            el.className = 'phase-enter';
+            el.innerHTML = `
+                <div class="text-center mb-5">
+                    <p class="text-orange-400 uppercase tracking-widest text-xs font-bold mb-2">Face-Off — ${getTeamName(faceOffFirstTeam)} buzzed first</p>
+                    <p class="text-white font-bold text-xl leading-snug italic">"${currentQuestion.question}"</p>
+                </div>
+                <div class="bg-gray-900 rounded-2xl p-4 border border-orange-800">
+                    <p class="text-orange-400 font-black text-center text-lg mb-3">${getTeamName(activeTeam)}'s Answer</p>
+                    ${contextHtml}
+                    <div class="space-y-2">${btnHtml}</div>
+                    <button onclick="window._faceOffPick('${activeTeam}', 'wrong')"
+                        class="mt-3 w-full bg-red-900 hover:bg-red-800 text-white font-black text-base py-4 rounded-xl transition-colors border border-red-800">
+                        ✗ Not on the board
+                    </button>
+                </div>
+            `;
+            return el;
+        }
+
+        function renderPlayOrPass() {
+            const w = state.faceOffWinner;
+            const el = document.createElement('div');
+            el.className = 'phase-enter';
+            el.innerHTML = `
+                <div class="text-center mb-10">
+                    <p class="text-gray-400 uppercase tracking-widest text-sm mb-3">Face-Off Winner</p>
+                    <p class="text-5xl font-black text-green-400">${getTeamName(w)}</p>
+                    <p class="text-gray-500 text-sm mt-3">Waiting for ${getTeamName(w)} to choose — or select below</p>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <button onclick="window._plays()"
+                        class="bg-green-700 hover:bg-green-600 active:bg-green-800 text-white font-black text-3xl py-10 rounded-2xl transition-colors">PLAY</button>
+                    <button onclick="window._passes()"
+                        class="bg-gray-700 hover:bg-gray-600 active:bg-gray-800 text-white font-black text-3xl py-10 rounded-2xl transition-colors">PASS</button>
+                </div>
+            `;
+            return el;
+        }
+
+        function renderAnswerBoard(q, allowReveal) {
+            if (!q) return '';
+            return q.answers.map((ans, idx) => {
+                const canReveal = allowReveal && !ans.revealed;
+                return `<div class="flex items-center gap-2 p-2.5 rounded-xl border text-sm transition-colors
+                    ${ans.revealed ? 'ans-revealed border-yellow-700 text-white' : 'bg-gray-700 border-gray-600 text-gray-200'}">
+                    <span class="w-6 text-center font-bold text-xs ${ans.revealed ? 'text-yellow-200' : 'text-gray-500'}">${idx + 1}</span>
+                    <span class="flex-1 font-semibold">${ans.text}</span>
+                    <span class="font-black w-8 text-right ${ans.revealed ? 'text-yellow-200' : 'text-gray-500'}">${ans.points}</span>
+                    ${canReveal ? `<button onclick="revealAnswer(${idx})" class="bg-green-700 hover:bg-green-600 text-white text-xs px-3 py-1.5 rounded-lg font-bold transition-colors">Reveal</button>`
+                        : `<div class="w-16"></div>`}
+                </div>`;
+            }).join('');
+        }
+
+        function renderPlay() {
+            const q = state.currentQuestion;
+            const strikesHtml = [0, 1, 2].map(i =>
+                `<span class="w-14 h-14 rounded-full border-2 flex items-center justify-center text-3xl font-black transition-all
+                    ${i < state.strikes ? 'border-red-500 bg-red-700 text-white' : 'border-gray-700 text-gray-700'}">✗</span>`
+            ).join('');
+
+            const el = document.createElement('div');
+            el.className = 'phase-enter space-y-4';
+            el.innerHTML = `
+                <div class="bg-gray-800 rounded-2xl p-4 border border-gray-700">
+                    <div class="flex items-center justify-between mb-1">
+                        <p class="text-xs text-gray-400 uppercase tracking-wider">Playing</p>
+                        <p class="text-green-400 font-black text-lg">${getTeamName(state.currentTeam)}</p>
+                    </div>
+                    <p class="text-white font-bold text-base italic">"${q ? q.question : ''}"</p>
+                </div>
+                <div class="bg-gray-800 rounded-2xl p-4 border border-gray-700 space-y-2">
+                    ${renderAnswerBoard(q, true)}
+                    <div class="pt-2 border-t border-gray-700 flex items-center justify-between">
+                        <span class="text-xs text-gray-400 uppercase tracking-wider">Round Points</span>
+                        <span class="text-3xl font-black text-yellow-400">${state.roundPoints || 0}</span>
+                    </div>
+                </div>
+                <div class="bg-gray-800 rounded-2xl p-4 border border-gray-700">
+                    <div class="flex items-center justify-between mb-3">
+                        <span class="text-xs text-gray-400 uppercase tracking-wider font-semibold">Strikes</span>
+                        <div class="flex gap-2">${strikesHtml}</div>
+                    </div>
+                    <div class="flex gap-2">
+                        <button onclick="window._addStrike()"
+                            class="flex-1 bg-red-700 hover:bg-red-600 active:bg-red-800 text-white font-black py-4 rounded-xl text-base transition-colors">+ Strike</button>
+                        <button onclick="window._removeStrike()"
+                            class="bg-gray-700 hover:bg-gray-600 text-white px-5 py-4 rounded-xl font-black text-lg transition-colors">−</button>
+                        <button onclick="window._clearStrikes()"
+                            class="bg-gray-700 hover:bg-gray-600 text-gray-300 px-4 py-4 rounded-xl text-sm transition-colors">Clear</button>
+                    </div>
+                </div>
+            `;
+            return el;
+        }
+
+        function renderSteal() {
+            const stealer = state.currentTeam;
+            const original = otherTeam(stealer);
+            const q = state.currentQuestion;
+
+            const el = document.createElement('div');
+            el.className = 'phase-enter space-y-4';
+            el.innerHTML = `
+                <div class="text-center">
+                    <p class="text-gray-400 uppercase tracking-widest text-sm mb-2">Steal Attempt</p>
+                    <p class="text-4xl font-black text-purple-400">${getTeamName(stealer)}</p>
+                    <p class="text-gray-500 text-sm mt-1">One chance — <span class="text-yellow-400 font-bold">${state.roundPoints} pts</span> on the line</p>
+                </div>
+
+                <div class="bg-gray-800 rounded-2xl p-4 border border-gray-700">
+                    <p class="text-xs text-gray-400 uppercase tracking-wider mb-2 font-semibold">Answer Board</p>
+                    <p class="text-white text-sm font-bold italic mb-3">"${q ? q.question : ''}"</p>
+                    <div class="space-y-1.5">${renderAnswerBoard(q, false)}</div>
+                    <div class="pt-2 mt-2 border-t border-gray-700 flex items-center justify-between">
+                        <span class="text-xs text-gray-400 uppercase tracking-wider">Round Points</span>
+                        <span class="text-2xl font-black text-yellow-400">${state.roundPoints || 0}</span>
+                    </div>
+                </div>
+
+                <div class="space-y-3">
+                    <button onclick="window._stealCorrect()"
+                        class="w-full bg-green-700 hover:bg-green-600 active:bg-green-800 text-white font-black py-7 rounded-2xl text-2xl transition-colors">
+                        ✓ Successful Steal
+                        <p class="text-base font-normal text-green-300 mt-1">${getTeamName(stealer)} wins ${state.roundPoints} pts</p>
+                    </button>
+                    <button onclick="window._stealWrong()"
+                        class="w-full bg-red-700 hover:bg-red-600 active:bg-red-800 text-white font-black py-7 rounded-2xl text-2xl transition-colors">
+                        ✗ Failed Steal
+                        <p class="text-base font-normal text-red-300 mt-1">${getTeamName(original)} keeps ${state.roundPoints} pts</p>
+                    </button>
+                </div>
+            `;
+            return el;
+        }
+
+        function renderRoundComplete() {
+            const el = document.createElement('div');
+            el.className = 'phase-enter';
+            el.innerHTML = `
+                <div class="text-center mb-8">
+                    <p class="text-5xl mb-3">✓</p>
+                    <p class="text-3xl font-black text-blue-400">Round ${state.round} Complete</p>
+                </div>
+                <div class="bg-gray-800 rounded-2xl p-6 border border-gray-700 mb-6 space-y-3">
+                    <div class="flex items-center justify-between">
+                        <span class="text-lg font-bold text-gray-200">${getTeamName('team1')}</span>
+                        <span class="text-4xl font-black text-white">${state.scores.team1} <span class="text-sm text-gray-400">pts</span></span>
+                    </div>
+                    <div class="border-t border-gray-700"></div>
+                    <div class="flex items-center justify-between">
+                        <span class="text-lg font-bold text-gray-200">${getTeamName('team2')}</span>
+                        <span class="text-4xl font-black text-white">${state.scores.team2} <span class="text-sm text-gray-400">pts</span></span>
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <button onclick="window._nextRound()"
+                        class="bg-blue-700 hover:bg-blue-600 active:bg-blue-800 text-white font-black py-6 rounded-2xl text-xl transition-colors">Next Round →</button>
+                    <button id="btnEndFromComplete"
+                        class="bg-gray-700 hover:bg-gray-600 text-gray-300 font-bold py-6 rounded-2xl text-base transition-colors">End Game</button>
+                </div>
+            `;
+            el.querySelector('#btnEndFromComplete').addEventListener('click', () => {
+                pushHistory();
+                state.phase = PHASES.GAME_OVER;
+                state.winner = state.scores.team1 > state.scores.team2 ? 'team1' :
+                    state.scores.team2 > state.scores.team1 ? 'team2' : null;
+                log(`Game over! ${state.winner ? getTeamName(state.winner) + ' wins!' : "It's a tie!"}`);
+                saveGameHistory({ scores: state.scores, teamNames: state.teamNames, round: state.round });
+                syncAndBroadcast();
+            });
+            return el;
+        }
+
+        function renderGameOver() {
+            const w = state.winner;
+            const el = document.createElement('div');
+            el.className = 'phase-enter';
+            el.innerHTML = `
+                <div class="text-center mb-8">
+                    <div class="text-7xl mb-4">🏆</div>
+                    <p class="text-4xl font-black ${w ? 'text-yellow-400' : 'text-gray-300'}">${w ? getTeamName(w) + ' Wins!' : "It's a Tie!"}</p>
+                    <p class="text-gray-500 mt-2 text-sm">Game Over</p>
+                </div>
+                <div class="bg-gray-800 rounded-2xl p-6 border border-gray-700 mb-6 space-y-3">
+                    <div class="flex items-center justify-between ${w === 'team1' ? 'text-yellow-400' : 'text-gray-200'}">
+                        <span class="text-xl font-bold">${getTeamName('team1')}</span>
+                        <span class="text-4xl font-black">${state.scores.team1}</span>
+                    </div>
+                    <div class="border-t border-gray-700"></div>
+                    <div class="flex items-center justify-between ${w === 'team2' ? 'text-yellow-400' : 'text-gray-200'}">
+                        <span class="text-xl font-bold">${getTeamName('team2')}</span>
+                        <span class="text-4xl font-black">${state.scores.team2}</span>
+                    </div>
+                </div>
+                <button id="btnNewGame"
+                    class="w-full bg-yellow-500 hover:bg-yellow-400 active:bg-yellow-600 text-gray-900 font-black py-6 rounded-2xl text-2xl transition-colors">
+                    New Game
+                </button>
+            `;
+            el.querySelector('#btnNewGame').addEventListener('click', () => {
+                localStorage.removeItem('familyFeudState');
+                state = defaultState();
+                state.questions = allQuestions;
+                historyStack = [];
+                namesSet = false;
+                gameStarted = false;
+                uiStep = 'ROUND_SETUP';
+                log('New game started.');
+                syncAndBroadcast();
+            });
+            return el;
+        }
+
+        // ── FAST MONEY RENDERERS ──────────────────────────────────────────────────────
+
+        function renderFastMoney() {
+            const fm = state.fastMoney || {};
+            fmInit(fm);
+            const sub = fm.fmPhase || 'SETUP';
+            if (sub === 'SETUP') return renderFMSetup();
+            if (sub === 'PLAYER1') return renderFMAnswering(1);
+            if (sub === 'PLAYER2_PREP') return renderFMPlayer2Prep();
+            if (sub === 'PLAYER2') return renderFMAnswering(2);
+            if (sub === 'COMPLETE') return renderFMComplete();
+            return renderFMSetup();
+        }
+
+        function renderFMSetup() {
+            const fm = state.fastMoney;
+            fmInit(fm);
+            const selected = fm.selectedQuestions;
+
+            const qListHtml = allQuestions.length ? allQuestions.map(q => {
+                const isSel = selected.some(sq => sq.id === q.id);
+                const isDis = !isSel && selected.length >= 5;
+                return `<label class="flex items-start gap-3 p-3 rounded-xl cursor-pointer border transition-colors
+                    ${isSel ? 'bg-pink-950 border-pink-600' : isDis ? 'bg-gray-800 border-gray-700 opacity-40 cursor-not-allowed' : 'bg-gray-800 border-gray-700 hover:border-gray-500'}">
+                    <input type="checkbox" value="${q.id}" ${isSel ? 'checked' : ''} ${isDis ? 'disabled' : ''}
+                        onchange="window._toggleFMQuestion(${q.id})" class="mt-0.5 accent-pink-500 w-4 h-4 flex-shrink-0">
+                    <span class="text-sm text-white leading-snug">${q.id}. ${q.question}</span>
+                </label>`;
+            }).join('') : '<p class="text-gray-500 text-sm text-center py-4">Loading questions…</p>';
+
+            const canStart = selected.length > 0;
+            const el = document.createElement('div');
+            el.className = 'phase-enter space-y-4';
+            el.innerHTML = `
+                <div class="flex items-center gap-3">
+                    <button onclick="window._backFromFastMoney()"
+                        class="text-gray-400 hover:text-white text-sm px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 transition-colors">←</button>
+                    <h2 class="text-xl font-black text-white">Fast Money — Select Questions</h2>
+                </div>
+                <p class="text-gray-400 text-sm">${selected.length} / 5 questions selected</p>
+                <div class="space-y-2 max-h-80 overflow-y-auto">${qListHtml}</div>
+                <button onclick="window._startFastMoney()" ${canStart ? '' : 'disabled'}
+                    class="w-full font-black text-xl py-5 rounded-2xl transition-colors
+                    ${canStart ? 'bg-pink-700 hover:bg-pink-600 active:bg-pink-800 text-white' : 'bg-gray-800 text-gray-600 cursor-not-allowed'}">
+                    Start Fast Money (${selected.length} Q${selected.length !== 1 ? 's' : ''})
+                </button>
+            `;
+            return el;
+        }
+
+        function renderFMAnswering(playerNum) {
+            const fm = state.fastMoney;
+            fmInit(fm);
+            const qIdx = fm.currentQuestionIdx;
+            const q = fm.selectedQuestions[qIdx];
+            const total = fm.selectedQuestions.length;
+            const p1Ans = playerNum === 2 ? (fm.player1.answers[qIdx] || null) : null;
+
+            const p1ContextHtml = p1Ans ? `
+                <div class="flex items-center justify-between bg-gray-700 rounded-xl px-4 py-2.5 mb-3">
+                    <span class="text-xs text-gray-400 uppercase tracking-wider">Player 1 said</span>
+                    <span class="text-sm font-bold ${p1Ans.points > 0 ? 'text-green-400' : 'text-gray-400'}">
+                        ${p1Ans.text}${p1Ans.points > 0 ? ` — ${p1Ans.points}pts` : ''}
+                    </span>
+                </div>` : '';
+
+            const answerBtns = q.answers.map((ans, idx) => {
+                const isDupe = p1Ans && p1Ans.ansIdx === idx;
+                return `<button onclick="window._fmSelectAnswer(${playerNum}, ${qIdx}, ${idx})"
+                    class="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left transition-colors border
+                    ${isDupe ? 'bg-yellow-900 border-yellow-600 text-yellow-100' : 'bg-gray-700 hover:bg-gray-600 border-gray-600 text-white'}">
+                    <span class="w-6 text-center text-sm text-gray-400">${idx + 1}</span>
+                    <span class="flex-1 font-semibold">${ans.text}</span>
+                    <span class="text-sm font-bold text-gray-400">${ans.points}pts</span>
+                    ${isDupe ? '<span class="text-xs bg-yellow-600 text-yellow-100 px-2 py-0.5 rounded-full font-bold">DUPE</span>' : ''}
+                </button>`;
+            }).join('');
+
+            // Progress dots
+            const dots = fm.selectedQuestions.map((_, i) =>
+                `<span class="w-3 h-3 rounded-full ${i < qIdx ? 'bg-pink-500' : i === qIdx ? 'bg-white' : 'bg-gray-600'}"></span>`
+            ).join('');
+
+            const el = document.createElement('div');
+            el.className = 'phase-enter space-y-4';
+            el.innerHTML = `
+                <div>
+                    <div class="flex items-center justify-between mb-2">
+                        <p class="text-pink-400 uppercase tracking-widest text-xs font-bold">Player ${playerNum} — Q${qIdx + 1} of ${total}</p>
+                        <div class="flex gap-1.5">${dots}</div>
+                    </div>
+                    <p class="text-white font-bold text-xl leading-snug">"${q.question}"</p>
+                </div>
+                <div class="bg-gray-800 rounded-2xl p-4 border border-gray-700 space-y-2">
+                    ${p1ContextHtml}
+                    ${answerBtns}
+                    <button onclick="window._fmPass(${playerNum}, ${qIdx})"
+                        class="mt-1 w-full bg-gray-700 hover:bg-gray-600 text-gray-400 font-bold py-3 rounded-xl text-sm transition-colors border border-gray-600">
+                        No Answer — Pass (0 pts)
+                    </button>
+                </div>
+            `;
+            return el;
+        }
+
+        function renderFMPlayer2Prep() {
+            const fm = state.fastMoney;
+            fmInit(fm);
+            const p1Score = fm.player1.answers.reduce((s, a) => s + (a ? a.points : 0), 0);
+
+            const summaryHtml = fm.player1.answers.map((ans, idx) => {
+                const q = fm.selectedQuestions[idx];
+                return `<div class="flex items-center justify-between py-1.5 text-sm border-b border-gray-700 last:border-0">
+                    <span class="text-gray-400 flex-1 truncate pr-3">${q.question.length > 45 ? q.question.slice(0, 42) + '...' : q.question}</span>
+                    <span class="font-bold ${ans && ans.points > 0 ? 'text-green-400' : 'text-gray-500'} flex-shrink-0">${ans ? ans.points + ' pts' : '—'}</span>
+                </div>`;
+            }).join('');
+
+            const el = document.createElement('div');
+            el.className = 'phase-enter';
+            el.innerHTML = `
+                <div class="text-center mb-6">
+                    <p class="text-green-400 uppercase tracking-widest text-sm font-bold mb-1">Player 1 Done!</p>
+                    <p class="text-6xl font-black text-white">${p1Score}<span class="text-2xl text-gray-400 ml-1">pts</span></p>
+                </div>
+                <div class="bg-gray-800 rounded-2xl p-4 border border-gray-700 mb-4">
+                    <p class="text-xs text-gray-400 uppercase tracking-wider mb-3 font-semibold">Player 1 Answers</p>
+                    ${summaryHtml}
+                </div>
+                <div class="bg-orange-950 rounded-2xl p-4 border border-orange-800 text-center mb-4">
+                    <p class="text-orange-300 font-black text-lg">🙉 Ask Player 1 to cover their ears</p>
+                    <p class="text-orange-400 text-sm mt-1">or leave the room before continuing</p>
+                </div>
+                <button onclick="window._startPlayer2()"
+                    class="w-full bg-pink-700 hover:bg-pink-600 active:bg-pink-800 text-white font-black text-xl py-6 rounded-2xl transition-colors">
+                    Start Player 2 →
+                </button>
+            `;
+            return el;
+        }
+
+        function renderFMComplete() {
+            const fm = state.fastMoney;
+            fmInit(fm);
+            const p1Score = fm.player1.score || 0;
+            const p2Score = fm.player2.score || 0;
+            const total = fm.totalScore || 0;
+            const WIN = 200;
+            const didWin = total >= WIN;
+
+            const buildTable = (answers) => fm.selectedQuestions.map((q, idx) => {
+                const ans = answers[idx];
+                return `<tr class="border-t border-gray-700">
+                    <td class="py-1.5 pr-2 text-gray-400 text-xs">${q.question.length > 32 ? q.question.slice(0, 29) + '...' : q.question}</td>
+                    <td class="py-1.5 pr-2 text-sm font-semibold ${ans && ans.points > 0 && !ans.isDuplicate ? 'text-white' : 'text-gray-500'}">${ans ? ans.text : '—'}</td>
+                    <td class="py-1.5 text-right font-black text-sm ${ans && ans.isDuplicate ? 'text-yellow-400' : ans && ans.points > 0 ? 'text-green-400' : 'text-gray-500'}">
+                        ${ans ? (ans.isDuplicate ? 'DUPE' : ans.points + 'pts') : '0pts'}
+                    </td>
+                </tr>`;
+            }).join('');
+
+            const el = document.createElement('div');
+            el.className = 'phase-enter space-y-4';
+            el.innerHTML = `
+                <div class="text-center">
+                    <p class="text-5xl mb-2">${didWin ? '🏆' : '🎯'}</p>
+                    <p class="text-4xl font-black ${didWin ? 'text-yellow-400' : 'text-white'}">${total} Points</p>
+                    <p class="text-lg font-bold mt-1 ${didWin ? 'text-green-400' : 'text-red-400'}">
+                        ${didWin ? 'Fast Money Win!' : `Need ${WIN} — ${WIN - total} pts short`}
+                    </p>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div class="bg-gray-800 rounded-2xl p-4 border border-gray-700 text-center">
+                        <p class="text-xs text-gray-400 uppercase mb-1">Player 1</p>
+                        <p class="text-3xl font-black text-white">${p1Score}</p>
+                    </div>
+                    <div class="bg-gray-800 rounded-2xl p-4 border border-gray-700 text-center">
+                        <p class="text-xs text-gray-400 uppercase mb-1">Player 2</p>
+                        <p class="text-3xl font-black text-white">${p2Score}</p>
+                    </div>
+                </div>
+                <div class="bg-gray-800 rounded-2xl border border-gray-700 overflow-hidden">
+                    <div class="px-4 py-2 bg-gray-700">
+                        <p class="text-xs text-gray-300 uppercase tracking-wider font-semibold">Full Breakdown</p>
+                    </div>
+                    <div class="px-4 py-2 border-b border-gray-600">
+                        <p class="text-xs font-bold text-pink-400 uppercase tracking-wider mb-1">Player 1 — ${p1Score}pts</p>
+                        <table class="w-full">${buildTable(fm.player1.answers)}</table>
+                    </div>
+                    <div class="px-4 py-2">
+                        <p class="text-xs font-bold text-pink-400 uppercase tracking-wider mb-1">Player 2 — ${p2Score}pts</p>
+                        <table class="w-full">${buildTable(fm.player2.answers)}</table>
+                    </div>
+                </div>
+                <button onclick="window._endFastMoney()"
+                    class="w-full bg-yellow-500 hover:bg-yellow-400 active:bg-yellow-600 text-gray-900 font-black text-xl py-5 rounded-2xl transition-colors">
+                    End Game
+                </button>
+            `;
+            return el;
+        }
+
+        init();
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Family Feud — Host Display</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { width: 100%; height: 100%; overflow: hidden; }
+        body {
+            background: #0a0a1a;
+            color: #f9fafb;
+            font-family: 'Segoe UI', 'Arial Black', system-ui, sans-serif;
+        }
+
+        /* ── Background decoration ─────────────────────────────────────────────── */
+        .bg-stars {
+            position: fixed;
+            inset: 0;
+            background:
+                radial-gradient(ellipse at 20% 50%, rgba(180, 83, 9, 0.12) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 20%, rgba(180, 83, 9, 0.08) 0%, transparent 50%),
+                radial-gradient(ellipse at 50% 90%, rgba(120, 53, 15, 0.15) 0%, transparent 50%);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        /* ── Top bar ────────────────────────────────────────────────────────────── */
+        .top-bar {
+            background: linear-gradient(180deg, #1a0a00, #2d1500);
+            border-bottom: 3px solid #d97706;
+            box-shadow: 0 4px 20px rgba(217, 119, 6, 0.3);
+        }
+
+        /* ── Score panels ───────────────────────────────────────────────────────── */
+        .score-panel {
+            background: linear-gradient(135deg, #1c1c2e, #2d1b69);
+            border: 2px solid #4c1d95;
+            border-radius: 12px;
+            min-width: 160px;
+            text-align: center;
+            padding: 8px 16px;
+            position: relative;
+            overflow: hidden;
+        }
+        .score-panel::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, #7c3aed, #a78bfa, #7c3aed);
+        }
+        .score-panel.active-team {
+            border-color: #f59e0b;
+            background: linear-gradient(135deg, #1c1400, #2d1f00);
+        }
+        .score-panel.active-team::before {
+            background: linear-gradient(90deg, #d97706, #fbbf24, #d97706);
+        }
+
+        /* ── Question display ───────────────────────────────────────────────────── */
+        .question-box {
+            background: linear-gradient(135deg, #1e293b, #0f172a);
+            border: 2px solid #334155;
+            border-radius: 16px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05);
+        }
+
+        /* ── Answer cards ───────────────────────────────────────────────────────── */
+        .answer-slot {
+            height: 64px;
+            perspective: 800px;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        .answer-slot-inner {
+            width: 100%;
+            height: 100%;
+            position: relative;
+            transform-style: preserve-3d;
+            transition: transform 0.0s;
+        }
+        .answer-slot.flip-in .answer-slot-inner {
+            animation: cardFlip 0.6s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+        }
+        @keyframes cardFlip {
+            0%     { transform: rotateX(90deg); }
+            60%    { transform: rotateX(-8deg); }
+            80%    { transform: rotateX(4deg); }
+            100% { transform: rotateX(0deg); }
+        }
+        .answer-face {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 16px;
+        }
+        .answer-unrevealed {
+            background: linear-gradient(135deg, #1e3a5f, #1e2d4a);
+            border: 2px solid #1d4ed8;
+        }
+        .answer-revealed {
+            background: linear-gradient(135deg, #92400e, #b45309, #d97706);
+            border: 2px solid #f59e0b;
+            box-shadow: 0 0 20px rgba(245, 158, 11, 0.4);
+        }
+        .answer-revealed .answer-text { color: #fff; font-weight: 800; font-size: 1.1rem; text-shadow: 0 1px 3px rgba(0,0,0,0.5); }
+        .answer-revealed .answer-pts { color: #fef3c7; font-weight: 900; font-size: 1.3rem; text-shadow: 0 1px 3px rgba(0,0,0,0.5); }
+        .answer-unrevealed .answer-num { color: #60a5fa; font-weight: 900; font-size: 1.5rem; text-align: center; width: 100%; }
+
+        /* ── Strike indicators ──────────────────────────────────────────────────── */
+        .strike-circle {
+            width: 56px; height: 56px;
+            border-radius: 50%;
+            border: 3px solid #374151;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 1.75rem; font-weight: 900;
+            color: #374151;
+            transition: all 0.4s;
+        }
+        .strike-circle.active {
+            background: #dc2626;
+            border-color: #f87171;
+            color: white;
+            animation: strikeAppear 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            box-shadow: 0 0 20px rgba(239, 68, 68, 0.6);
+        }
+        @keyframes strikeAppear {
+            0% { transform: scale(0); opacity: 0; }
+            60% { transform: scale(1.3); }
+            100% { transform: scale(1); opacity: 1; }
+        }
+
+        /* ── Round points ───────────────────────────────────────────────────────── */
+        .points-display {
+            background: linear-gradient(135deg, #0c1a0c, #1a3a1a);
+            border: 2px solid #16a34a;
+            border-radius: 12px;
+            text-align: center;
+            box-shadow: 0 0 20px rgba(22, 163, 74, 0.2);
+        }
+
+        /* ── Phase badge ─────────────────────────────────────────────────────────── */
+        .phase-badge {
+            display: inline-block;
+            padding: 4px 14px;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+        }
+
+        /* ── Ticker ─────────────────────────────────────────────────────────────── */
+        .ticker-text {
+            animation: tickerGlow 2s ease-in-out infinite;
+        }
+        @keyframes tickerGlow {
+            0%, 100% { text-shadow: 0 0 10px rgba(245,158,11,0.4); }
+            50% { text-shadow: 0 0 20px rgba(245,158,11,0.8), 0 0 40px rgba(245,158,11,0.3); }
+        }
+
+        /* ── Fast Money timer ───────────────────────────────────────────────────── */
+        .fm-timer {
+            font-size: 5rem;
+            font-weight: 900;
+            color: #fbbf24;
+            text-shadow: 0 0 30px rgba(251, 191, 36, 0.6);
+            line-height: 1;
+        }
+        .fm-timer.urgent {
+            color: #ef4444;
+            text-shadow: 0 0 30px rgba(239, 68, 68, 0.8);
+            animation: timerPulse 0.5s ease-in-out infinite;
+        }
+        @keyframes timerPulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+
+        /* ── Winner overlay ─────────────────────────────────────────────────────── */
+        #winnerOverlay {
+            position: fixed;
+            inset: 0;
+            z-index: 100;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0,0,0,0.85);
+        }
+        #winnerOverlay.show { display: flex; }
+        .winner-card {
+            text-align: center;
+            animation: winnerAppear 0.8s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+        }
+        @keyframes winnerAppear {
+            0% { transform: scale(0) rotate(-10deg); opacity: 0; }
+            100% { transform: scale(1) rotate(0deg); opacity: 1; }
+        }
+        .winner-title {
+            font-size: 5rem;
+            font-weight: 900;
+            color: #fbbf24;
+            text-shadow: 0 0 40px rgba(251,191,36,0.8), 0 4px 0 #92400e;
+            line-height: 1;
+            letter-spacing: -0.02em;
+        }
+        .winner-name {
+            font-size: 3.5rem;
+            font-weight: 900;
+            color: white;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+            margin-top: 0.5rem;
+        }
+
+        /* Confetti */
+        .confetti-container {
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: 99;
+            overflow: hidden;
+        }
+        .confetti-piece {
+            position: absolute;
+            width: 10px;
+            height: 20px;
+            top: -30px;
+            animation: confettiFall linear infinite;
+            border-radius: 2px;
+        }
+        @keyframes confettiFall {
+            0%     { transform: translateY(0) rotateZ(0deg); opacity: 1; }
+            80%    { opacity: 1; }
+            100% { transform: translateY(100vh) rotateZ(720deg); opacity: 0; }
+        }
+    </style>
+</head>
+<body>
+    <div class="bg-stars"></div>
+    <div class="confetti-container" id="confettiContainer"></div>
+
+    <!-- Layout: full height flex column -->
+    <div class="relative z-10 h-screen flex flex-col">
+
+        <!-- TOP BAR -->
+        <div class="top-bar px-6 py-2 flex items-center justify-between gap-4">
+
+            <!-- Team 1 Score -->
+            <div class="score-panel" id="scorePanel1">
+                <div id="team1Name" class="text-gray-300 text-xs font-bold uppercase tracking-widest truncate">TEAM 1</div>
+                <div id="score1" class="text-4xl font-black text-white">0</div>
+            </div>
+
+            <!-- Center: Title + Phase -->
+            <div class="flex-1 text-center">
+                <h1 class="ticker-text text-yellow-400 font-black text-2xl tracking-widest uppercase" style="font-style: italic;">
+                    FAMILY FEUD
+                </h1>
+                <div class="flex items-center justify-center gap-3 mt-0.5">
+                    <span class="phase-badge bg-gray-700 text-gray-300" id="phaseBadge">IDLE</span>
+                    <span class="text-gray-400 text-sm">Round <strong id="roundNum" class="text-white">1</strong></span>
+                </div>
+            </div>
+
+            <!-- Team 2 Score -->
+            <div class="score-panel" id="scorePanel2">
+                <div id="team2Name" class="text-gray-300 text-xs font-bold uppercase tracking-widest truncate">TEAM 2</div>
+                <div id="score2" class="text-4xl font-black text-white">0</div>
+            </div>
+        </div>
+
+        <!-- MAIN AREA -->
+        <div class="flex-1 flex flex-col px-6 py-3 gap-3 min-h-0">
+
+            <!-- Question -->
+            <div class="question-box px-6 py-3 flex items-center justify-between gap-4">
+                <div class="flex-1">
+                    <p class="text-gray-400 text-xs uppercase tracking-wider mb-0.5">Survey Says...</p>
+                    <p id="questionText" class="text-white font-bold text-xl leading-snug">Waiting for question...</p>
+                </div>
+                <!-- Current team indicator -->
+                <div id="currentTeamBadge" class="hidden flex-shrink-0 text-center">
+                    <div class="bg-yellow-600 border border-yellow-400 rounded-lg px-3 py-1.5">
+                        <p class="text-yellow-100 text-xs">Playing</p>
+                        <p id="currentTeamName" class="text-white font-black text-base">—</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Buzzer result banner -->
+            <div id="buzzerBanner" class="hidden rounded-xl px-5 py-2.5 flex items-center justify-center gap-3 border-2 border-orange-500 bg-orange-950">
+                <span class="text-orange-300 text-lg">🔔</span>
+                <span class="text-orange-300 text-sm font-bold uppercase tracking-wider">Buzzed First:</span>
+                <span id="buzzerBannerName" class="text-white font-black text-xl">—</span>
+            </div>
+
+            <!-- Answers grid + sidebar -->
+            <div class="flex-1 flex gap-4 min-h-0">
+
+                <!-- Answer cards (left) -->
+                <div class="flex-1 flex flex-col justify-center gap-2" id="answersGrid">
+                    <p class="text-gray-500 text-center text-sm">Load a question to see the board</p>
+                </div>
+
+                <!-- Right sidebar: strikes + points + fast money timer -->
+                <div class="flex flex-col gap-3 w-48 flex-shrink-0 justify-center">
+
+                    <!-- Strikes -->
+                    <div class="bg-gray-900 border border-gray-700 rounded-xl p-3 text-center">
+                        <p class="text-gray-400 text-xs uppercase tracking-wider mb-2">Strikes</p>
+                        <div class="flex justify-center gap-2" id="strikeRow">
+                            <div class="strike-circle" id="strikeEl0">✗</div>
+                            <div class="strike-circle" id="strikeEl1">✗</div>
+                            <div class="strike-circle" id="strikeEl2">✗</div>
+                        </div>
+                    </div>
+
+                    <!-- Round Points -->
+                    <div class="points-display p-3">
+                        <p class="text-green-400 text-xs uppercase tracking-wider mb-0.5">Round Points</p>
+                        <p id="roundPoints" class="text-4xl font-black text-green-300">0</p>
+                    </div>
+
+                    <!-- Fast Money Timer (hidden unless FM active) -->
+                    <div id="fmTimerBox" class="hidden bg-gray-900 border border-red-700 rounded-xl p-3 text-center">
+                        <p class="text-red-400 text-xs uppercase tracking-wider mb-1">Fast Money</p>
+                        <p class="text-gray-300 text-xs mb-1" id="fmPlayerLabel">Player 1</p>
+                        <p class="fm-timer" id="fmTimerDisplay">20</p>
+                        <div id="fmScores" class="mt-2">
+                            <p class="text-xs text-gray-400">P1: <span id="fmP1" class="text-green-400 font-bold">0</span></p>
+                            <p class="text-xs text-gray-400">P2: <span id="fmP2" class="text-green-400 font-bold">0</span></p>
+                            <p class="text-xs text-yellow-400 font-bold mt-1">Total: <span id="fmTotal">0</span></p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- WINNER OVERLAY -->
+    <div id="winnerOverlay">
+        <div class="winner-card">
+            <div class="text-8xl mb-4" id="winnerEmoji">🏆</div>
+            <div class="winner-title">WINNER!</div>
+            <div class="winner-name" id="winnerNameDisplay">Team 1</div>
+            <div class="flex gap-8 justify-center mt-6 text-2xl font-black">
+                <div class="text-center">
+                    <div class="text-gray-400 text-sm" id="finalName1">Team 1</div>
+                    <div class="text-yellow-400" id="finalScore1">0</div>
+                </div>
+                <div class="text-gray-500 text-4xl flex items-center">vs</div>
+                <div class="text-center">
+                    <div class="text-gray-400 text-sm" id="finalName2">Team 2</div>
+                    <div class="text-yellow-400" id="finalScore2">0</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import {
+            initDB, loadState, subscribe, PHASES
+        } from './game.js';
+
+        let state = loadState();
+        let prevState = null;
+
+        async function init() {
+            // Subscribe and render immediately — don't block on the DB call
+            subscribe((newState) => {
+                prevState = state;
+                state = newState;
+                render();
+            });
+            render();
+            // initDB is only needed to seed questions; failures don't affect display
+            try { await initDB(); } catch (e) { console.warn('SheetDB unavailable', e); }
+        }
+
+        // ── PHASE BADGE STYLE ─────────────────────────────────────────────────────
+        function getPhaseBadgeStyle(phase) {
+            const styles = {
+                IDLE: 'bg-gray-700 text-gray-300',
+                FACE_OFF: 'bg-orange-600 text-white',
+                FACE_OFF_ANSWER: 'bg-orange-500 text-white',
+                PLAY: 'bg-green-700 text-white',
+                STEAL: 'bg-purple-700 text-white',
+                FAST_MONEY: 'bg-red-700 text-white',
+                ROUND_COMPLETE: 'bg-blue-700 text-white',
+                GAME_OVER: 'bg-yellow-500 text-gray-900',
+            };
+            return styles[phase] || 'bg-gray-700 text-gray-300';
+        }
+
+        // ── RENDER ────────────────────────────────────────────────────────────────
+        function render() {
+            // Top bar
+            document.getElementById('team1Name').textContent = (state.teamNames.team1 || 'TEAM 1').toUpperCase();
+            document.getElementById('team2Name').textContent = (state.teamNames.team2 || 'TEAM 2').toUpperCase();
+            document.getElementById('score1').textContent = state.scores.team1 || 0;
+            document.getElementById('score2').textContent = state.scores.team2 || 0;
+
+            // Active team highlight
+            const panel1 = document.getElementById('scorePanel1');
+            const panel2 = document.getElementById('scorePanel2');
+            panel1.classList.toggle('active-team', state.currentTeam === 'team1');
+            panel2.classList.toggle('active-team', state.currentTeam === 'team2');
+
+            // Phase badge
+            const badge = document.getElementById('phaseBadge');
+            badge.textContent = state.phase;
+            badge.className = `phase-badge ${getPhaseBadgeStyle(state.phase)}`;
+
+            // Round
+            document.getElementById('roundNum').textContent = state.round;
+
+            // Question
+            document.getElementById('questionText').textContent =
+                state.currentQuestion ? state.currentQuestion.question : 'Waiting for question...';
+
+            // Current team badge
+            const ctBadge = document.getElementById('currentTeamBadge');
+            const ctName = document.getElementById('currentTeamName');
+            if (state.currentTeam && state.phase !== PHASES.IDLE) {
+                ctBadge.classList.remove('hidden');
+                ctName.textContent = state.teamNames[state.currentTeam] || state.currentTeam;
+            } else {
+                ctBadge.classList.add('hidden');
+            }
+
+            // Buzzer result banner
+            const buzzerBanner = document.getElementById('buzzerBanner');
+            if (state.faceOffFirstTeam && (state.phase === PHASES.FACE_OFF || state.phase === PHASES.FACE_OFF_ANSWER)) {
+                buzzerBanner.classList.remove('hidden');
+                document.getElementById('buzzerBannerName').textContent =
+                    state.teamNames[state.faceOffFirstTeam] || state.faceOffFirstTeam;
+            } else {
+                buzzerBanner.classList.add('hidden');
+            }
+
+            // Strikes
+            for (let i = 0; i < 3; i++) {
+                const el = document.getElementById(`strikeEl${i}`);
+                const wasActive = el.classList.contains('active');
+                const nowActive = i < state.strikes;
+                el.classList.toggle('active', nowActive);
+                // Trigger animation on newly active
+                if (nowActive && !wasActive) {
+                    el.classList.remove('active');
+                    void el.offsetWidth; // reflow
+                    el.classList.add('active');
+                }
+            }
+
+            // Round points
+            document.getElementById('roundPoints').textContent = state.roundPoints || 0;
+
+            // Answers board
+            renderAnswersBoard();
+
+            // Fast Money
+            if (state.fastMoney && state.fastMoney.active) {
+                document.getElementById('fmTimerBox').classList.remove('hidden');
+                document.getElementById('fmPlayerLabel').textContent = `Player ${state.fastMoney.currentPlayer}`;
+                const timer = document.getElementById('fmTimerDisplay');
+                timer.textContent = state.fastMoney.timerSeconds;
+                timer.className = `fm-timer${state.fastMoney.timerSeconds <= 5 ? ' urgent' : ''}`;
+                document.getElementById('fmP1').textContent = state.fastMoney.player1.score;
+                document.getElementById('fmP2').textContent = state.fastMoney.player2.score;
+                document.getElementById('fmTotal').textContent = state.fastMoney.totalScore;
+            } else {
+                document.getElementById('fmTimerBox').classList.add('hidden');
+            }
+
+            // Game over
+            if (state.phase === PHASES.GAME_OVER) {
+                showWinnerOverlay();
+            } else {
+                document.getElementById('winnerOverlay').classList.remove('show');
+                document.getElementById('confettiContainer').innerHTML = '';
+            }
+        }
+
+        // ── ANSWERS BOARD ─────────────────────────────────────────────────────────
+        function renderAnswersBoard() {
+            const grid = document.getElementById('answersGrid');
+            const q = state.currentQuestion;
+
+            if (!q || !q.answers || q.answers.length === 0) {
+                grid.innerHTML = '<p class="text-gray-500 text-center text-sm">Load a question to see the board</p>';
+                return;
+            }
+
+            // Build layout: up to 2 columns
+            const answers = q.answers;
+            const half = Math.ceil(answers.length / 2);
+            const col1 = answers.slice(0, half);
+            const col2 = answers.slice(half);
+
+            // Check if we need to rebuild
+            const existing = grid.querySelectorAll('[data-slot]');
+            if (existing.length !== answers.length) {
+                buildAnswerGrid(answers);
+            }
+
+            // Update existing slots
+            answers.forEach((ans, idx) => {
+                const slot = grid.querySelector(`[data-slot="${idx}"]`);
+                if (!slot) return;
+                const wasRevealed = slot.dataset.revealed === 'true';
+                const nowRevealed = ans.revealed;
+
+                slot.dataset.revealed = nowRevealed;
+
+                if (nowRevealed) {
+                    if (!wasRevealed) {
+                        // Trigger flip animation
+                        slot.classList.remove('flip-in');
+                        void slot.offsetWidth;
+                        slot.classList.add('flip-in');
+                    }
+                    slot.querySelector('.answer-face').className = 'answer-face answer-revealed';
+                    slot.querySelector('.answer-face').innerHTML = `
+                        <span class="answer-text">${idx + 1}. ${ans.text}</span>
+                        <span class="answer-pts">${ans.points}</span>
+                    `;
+                } else {
+                    slot.querySelector('.answer-face').className = 'answer-face answer-unrevealed';
+                    slot.querySelector('.answer-face').innerHTML = `<span class="answer-num">${idx + 1}</span>`;
+                }
+            });
+        }
+
+        function buildAnswerGrid(answers) {
+            const grid = document.getElementById('answersGrid');
+            grid.innerHTML = '';
+
+            const half = Math.ceil(answers.length / 2);
+            const wrapper = document.createElement('div');
+            wrapper.className = 'grid grid-cols-2 gap-2 w-full';
+
+            // Left column
+            const left = document.createElement('div');
+            left.className = 'flex flex-col gap-2';
+            // Right column
+            const right = document.createElement('div');
+            right.className = 'flex flex-col gap-2';
+
+            answers.forEach((ans, idx) => {
+                const slot = document.createElement('div');
+                slot.className = 'answer-slot';
+                slot.dataset.slot = idx;
+                slot.dataset.revealed = ans.revealed;
+                slot.innerHTML = `
+                    <div class="answer-slot-inner">
+                        <div class="answer-face ${ans.revealed ? 'answer-revealed' : 'answer-unrevealed'}">
+                            ${ans.revealed
+                                ? `<span class="answer-text">${idx + 1}. ${ans.text}</span><span class="answer-pts">${ans.points}</span>`
+                                : `<span class="answer-num">${idx + 1}</span>`}
+                        </div>
+                    </div>
+                `;
+                if (idx < half) left.appendChild(slot);
+                else right.appendChild(slot);
+            });
+
+            wrapper.appendChild(left);
+            wrapper.appendChild(right);
+            grid.appendChild(wrapper);
+        }
+
+        // ── WINNER OVERLAY ────────────────────────────────────────────────────────
+        function showWinnerOverlay() {
+            const overlay = document.getElementById('winnerOverlay');
+            overlay.classList.add('show');
+
+            const winner = state.winner;
+            if (winner) {
+                document.getElementById('winnerEmoji').textContent = '🏆';
+                document.getElementById('winnerNameDisplay').textContent = state.teamNames[winner] || winner;
+            } else {
+                document.getElementById('winnerEmoji').textContent = '🤝';
+                document.getElementById('winnerNameDisplay').textContent = "IT'S A TIE!";
+            }
+
+            document.getElementById('finalName1').textContent = state.teamNames.team1 || 'Team 1';
+            document.getElementById('finalScore1').textContent = state.scores.team1 || 0;
+            document.getElementById('finalName2').textContent = state.teamNames.team2 || 'Team 2';
+            document.getElementById('finalScore2').textContent = state.scores.team2 || 0;
+
+            launchConfetti();
+        }
+
+        // ── CONFETTI ──────────────────────────────────────────────────────────────
+        function launchConfetti() {
+            const container = document.getElementById('confettiContainer');
+            if (container.childElementCount > 0) return; // already launched
+
+            const colors = ['#f59e0b', '#ef4444', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
+            for (let i = 0; i < 80; i++) {
+                const piece = document.createElement('div');
+                piece.className = 'confetti-piece';
+                piece.style.left = Math.random() * 100 + 'vw';
+                piece.style.background = colors[Math.floor(Math.random() * colors.length)];
+                piece.style.width = (Math.random() * 8 + 5) + 'px';
+                piece.style.height = (Math.random() * 16 + 8) + 'px';
+                piece.style.animationDuration = (Math.random() * 3 + 2) + 's';
+                piece.style.animationDelay = (Math.random() * 2) + 's';
+                piece.style.borderRadius = Math.random() > 0.5 ? '50%' : '2px';
+                container.appendChild(piece);
+            }
+        }
+
+        init();
+    </script>
+</body>
+</html>
