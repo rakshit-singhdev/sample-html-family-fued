@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Family Feud — Host Display</title>
+    <title>Host Display</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -110,6 +110,11 @@
         .answer-revealed .answer-text { color: #fff; font-weight: 800; font-size: 1.1rem; text-shadow: 0 1px 3px rgba(0,0,0,0.5); }
         .answer-revealed .answer-pts { color: #fef3c7; font-weight: 900; font-size: 1.3rem; text-shadow: 0 1px 3px rgba(0,0,0,0.5); }
         .answer-unrevealed .answer-num { color: #60a5fa; font-weight: 900; font-size: 1.5rem; text-align: center; width: 100%; }
+        .answer-disabled {
+            background: linear-gradient(135deg, #1e3a5f, #1e2d4a);
+            border: 2px solid #1d4ed8;
+        }
+        .answer-disabled .answer-num { color: #374151; font-weight: 900; font-size: 1.5rem; text-align: center; width: 100%; }
 
         /* ── Strike indicators ──────────────────────────────────────────────────── */
         .strike-circle {
@@ -286,7 +291,7 @@
                 <div id="currentTeamBadge" class="hidden flex-shrink-0 text-center">
                     <div class="bg-yellow-600 border border-yellow-400 rounded-lg px-3 py-1.5">
                         <p class="text-yellow-100 text-xs">Playing</p>
-                        <p id="currentTeamName" class="text-white font-black text-base">—</p>
+                        <p id="currentTeamName" class="text-white font-black text-base">-</p>
                     </div>
                 </div>
             </div>
@@ -295,7 +300,7 @@
             <div id="buzzerBanner" class="hidden rounded-xl px-5 py-2.5 flex items-center justify-center gap-3 border-2 border-orange-500 bg-orange-950">
                 <span class="text-orange-300 text-lg">🔔</span>
                 <span class="text-orange-300 text-sm font-bold uppercase tracking-wider">Buzzed First:</span>
-                <span id="buzzerBannerName" class="text-white font-black text-xl">—</span>
+                <span id="buzzerBannerName" class="text-white font-black text-xl">-</span>
             </div>
 
             <!-- Answers grid + sidebar -->
@@ -371,7 +376,7 @@
         let prevState = null;
 
         async function init() {
-            // Subscribe and render immediately — don't block on the DB call
+            // Subscribe and render immediately - don't block on the DB call
             subscribe((newState) => {
                 prevState = state;
                 state = newState;
@@ -487,39 +492,38 @@
         }
 
         // ── ANSWERS BOARD ─────────────────────────────────────────────────────────
+        const BOARD_SIZE = 8;
+
         function renderAnswersBoard() {
             const grid = document.getElementById('answersGrid');
             const q = state.currentQuestion;
 
             if (!q || !q.answers || q.answers.length === 0) {
                 grid.innerHTML = '<p class="text-gray-500 text-center text-sm">Load a question to see the board</p>';
+                delete grid.dataset.questionId;
                 return;
             }
 
-            // Build layout: up to 2 columns
             const answers = q.answers;
-            const half = Math.ceil(answers.length / 2);
-            const col1 = answers.slice(0, half);
-            const col2 = answers.slice(half);
 
-            // Check if we need to rebuild
+            // Rebuild when question changes or grid hasn't been built yet
             const existing = grid.querySelectorAll('[data-slot]');
-            if (existing.length !== answers.length) {
+            if (existing.length !== BOARD_SIZE || parseInt(grid.dataset.questionId || '0') !== q.id) {
+                grid.dataset.questionId = q.id;
                 buildAnswerGrid(answers);
+                return; // buildAnswerGrid already renders current state
             }
 
-            // Update existing slots
+            // Update only real answer slots (disabled slots never change)
             answers.forEach((ans, idx) => {
                 const slot = grid.querySelector(`[data-slot="${idx}"]`);
-                if (!slot) return;
+                if (!slot || slot.dataset.disabled === 'true') return;
                 const wasRevealed = slot.dataset.revealed === 'true';
                 const nowRevealed = ans.revealed;
-
                 slot.dataset.revealed = nowRevealed;
 
                 if (nowRevealed) {
                     if (!wasRevealed) {
-                        // Trigger flip animation
                         slot.classList.remove('flip-in');
                         void slot.offsetWidth;
                         slot.classList.add('flip-in');
@@ -540,34 +544,48 @@
             const grid = document.getElementById('answersGrid');
             grid.innerHTML = '';
 
-            const half = Math.ceil(answers.length / 2);
+            const half = BOARD_SIZE / 2; // always 4 per column
             const wrapper = document.createElement('div');
             wrapper.className = 'grid grid-cols-2 gap-2 w-full';
 
-            // Left column
             const left = document.createElement('div');
             left.className = 'flex flex-col gap-2';
-            // Right column
             const right = document.createElement('div');
             right.className = 'flex flex-col gap-2';
 
-            answers.forEach((ans, idx) => {
+            for (let idx = 0; idx < BOARD_SIZE; idx++) {
                 const slot = document.createElement('div');
                 slot.className = 'answer-slot';
                 slot.dataset.slot = idx;
-                slot.dataset.revealed = ans.revealed;
-                slot.innerHTML = `
-                    <div class="answer-slot-inner">
-                        <div class="answer-face ${ans.revealed ? 'answer-revealed' : 'answer-unrevealed'}">
-                            ${ans.revealed
-                                ? `<span class="answer-text">${idx + 1}. ${ans.text}</span><span class="answer-pts">${ans.points}</span>`
-                                : `<span class="answer-num">${idx + 1}</span>`}
+
+                if (idx < answers.length) {
+                    const ans = answers[idx];
+                    slot.dataset.revealed = ans.revealed;
+                    slot.innerHTML = `
+                        <div class="answer-slot-inner">
+                            <div class="answer-face ${ans.revealed ? 'answer-revealed' : 'answer-unrevealed'}">
+                                ${ans.revealed
+                                    ? `<span class="answer-text">${idx + 1}. ${ans.text}</span><span class="answer-pts">${ans.points}</span>`
+                                    : `<span class="answer-num">${idx + 1}</span>`}
+                            </div>
                         </div>
-                    </div>
-                `;
+                    `;
+                } else {
+                    // Disabled placeholder tile
+                    slot.dataset.revealed = 'false';
+                    slot.dataset.disabled = 'true';
+                    slot.innerHTML = `
+                        <div class="answer-slot-inner">
+                            <div class="answer-face answer-disabled">
+                                <span class="answer-num"> </span>
+                            </div>
+                        </div>
+                    `;
+                }
+
                 if (idx < half) left.appendChild(slot);
                 else right.appendChild(slot);
-            });
+            }
 
             wrapper.appendChild(left);
             wrapper.appendChild(right);

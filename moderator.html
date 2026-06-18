@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Family Feud — Moderator</title>
+    <title>Moderator</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         .ans-revealed {
@@ -53,7 +53,7 @@
                     class="inline-block text-xs font-bold px-2 py-0.5 rounded-full bg-gray-700 text-gray-300 uppercase tracking-wider">SETUP</span>
             </div>
         </div>
-        <!-- Row 2: action buttons — always fully visible -->
+        <!-- Row 2: action buttons - always fully visible -->
         <div class="px-3 pb-2 pt-1.5 flex items-center gap-1.5 border-t border-gray-800">
             <button id="btnRevert" disabled
                 class="flex-1 bg-gray-800 hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed text-white text-xs px-2 py-2 rounded-lg transition-colors font-semibold">
@@ -80,7 +80,7 @@
     </main>
 
     <!-- LOG DRAWER -->
-    <div id="logDrawer" class="hidden fixed inset-x-0 bottom-0 z-30 bg-gray-900 border-t border-gray-700">
+    <div id="logDrawer" class="hidden fixed left-0 top-12 bottom-0 w-80 z-30 bg-gray-900 border-r border-gray-700">
         <div class="flex items-center justify-between px-4 py-2 border-b border-gray-800">
             <span class="text-xs text-gray-400 uppercase tracking-wider font-semibold">Game Log</span>
             <button id="btnCloseLog" class="text-gray-500 hover:text-white text-xs px-2 py-1">✕ Close</button>
@@ -124,6 +124,9 @@
         let namesSet = false;
         let gameStarted = false;
         let uiStep = 'ROUND_SETUP';
+        let fmTimer = null;
+        let fmSecondsLeft = 0;
+        let fmCurrentPlayer = 0;
 
         const PHASE_COLORS = {
             TEAM_SETUP: 'bg-gray-700 text-gray-300',
@@ -131,6 +134,7 @@
             QUESTION_SELECTION: 'bg-gray-700 text-gray-300',
             BUZZER_WAITING: 'bg-orange-600 text-white',
             FACE_OFF: 'bg-orange-600 text-white',
+            FACE_OFF_EXHAUSTED: 'bg-red-700 text-white',
             PLAY_OR_PASS: 'bg-orange-500 text-white',
             PLAY: 'bg-green-700 text-white',
             STEAL: 'bg-purple-700 text-white',
@@ -140,7 +144,8 @@
         };
         const PHASE_LABELS = {
             TEAM_SETUP: 'Setup', ROUND_SETUP: 'Setup', QUESTION_SELECTION: 'Setup',
-            BUZZER_WAITING: 'Face-Off', FACE_OFF: 'Face-Off', PLAY_OR_PASS: 'Play / Pass',
+            BUZZER_WAITING: 'Face-Off', FACE_OFF: 'Face-Off', FACE_OFF_EXHAUSTED: 'All Wrong!',
+            PLAY_OR_PASS: 'Play / Pass',
             PLAY: 'Playing', STEAL: 'Steal', ROUND_COMPLETE: 'Round Over',
             GAME_OVER: 'Game Over', FAST_MONEY: 'Fast Money',
         };
@@ -224,10 +229,13 @@
             if (!sel) return;
             const prev = sel.value;
             sel.innerHTML = '<option value="">-- Select a question --</option>';
+            const usedIds = state.usedQuestions || [];
             allQuestions.forEach(q => {
                 const o = document.createElement('option');
                 o.value = q.id;
-                o.textContent = `${q.id}. ${q.question}`;
+                const isUsed = usedIds.includes(q.id);
+                o.textContent = `${q.id}. ${q.question}${isUsed ? ' (used)' : ''}`;
+                if (isUsed) o.disabled = true;
                 sel.appendChild(o);
             });
             if (prev) sel.value = prev;
@@ -274,9 +282,29 @@
                 const firstAns = state.faceOffAnswers[firstTeam];
                 const firstPts = (firstAns !== null && firstAns !== 'wrong') ? state.currentQuestion.answers[firstAns].points : 0;
                 const secondPts = (ansIdx !== 'wrong') ? state.currentQuestion.answers[ansIdx].points : 0;
-                const winner = (firstPts >= secondPts) ? firstTeam : secondTeam;
-                log(`Face-off: ${getTeamName(firstTeam)} ${firstPts}pts vs ${getTeamName(secondTeam)} ${secondPts}pts — ${getTeamName(winner)} wins!`);
-                completeFaceOff(winner);
+
+                // One team got a real answer — higher score wins
+                if (firstPts > 0 || secondPts > 0) {
+                    const winner = (firstPts >= secondPts) ? firstTeam : secondTeam;
+                    log(`Face-off: ${getTeamName(firstTeam)} ${firstPts}pts vs ${getTeamName(secondTeam)} ${secondPts}pts — ${getTeamName(winner)} wins!`);
+                    completeFaceOff(winner);
+                    syncAndBroadcast();
+                    return;
+                }
+
+                // Both wrong — increment cycle counter
+                state.faceOffCycles = (state.faceOffCycles || 0) + 1;
+                const maxCycles = state.playersPerTeam || 4;
+                log(`Both wrong — cycle ${state.faceOffCycles}/${maxCycles}`);
+
+                if (state.faceOffCycles >= maxCycles) {
+                    log(`All ${maxCycles} cycles exhausted. Moderator must decide.`);
+                    state.phase = PHASES.FACE_OFF_EXHAUSTED;
+                } else {
+                    // Reset answers for next cycle, stay in FACE_OFF phase
+                    state.faceOffAnswers = { team1: null, team2: null };
+                    log(`Player ${state.faceOffCycles + 1}/${maxCycles}: ${getTeamName(firstTeam)} answers again.`);
+                }
             }
 
             syncAndBroadcast();
@@ -390,6 +418,7 @@
             state.faceOffAnswers = { team1: null, team2: null };
             state.faceOffFirstTeam = null;
             state.faceOffWinner = null;
+            state.faceOffCycles = 0;
             state.pointMultiplier = 1;
             uiStep = 'ROUND_SETUP';
             log(`Round ${state.round} starting.`);
@@ -460,13 +489,17 @@
                 const q = allQuestions.find(q => q.id === id);
                 if (q) fm.selectedQuestions.push({ ...q, answers: q.answers.map(a => ({ ...a, revealed: false })) });
             }
-            render(); // local only — not synced until Start pressed
+            render(); // local only - not synced until Start pressed
         };
 
         window._startFastMoney = () => {
             const fm = state.fastMoney;
             fmInit(fm);
             if (!fm.selectedQuestions.length) { toast('Select at least 1 question.', 'error'); return; }
+            const topTwoSum = fm.selectedQuestions.reduce((sum, q) => {
+                return sum + (q.answers[0] ? q.answers[0].points : 0) + (q.answers[1] ? q.answers[1].points : 0);
+            }, 0);
+            if (topTwoSum < 200) { toast(`Total potential score is only ${topTwoSum} pts — need ≥200 for a fair game.`, 'warn'); return; }
             pushHistory();
             fm.fmPhase = 'PLAYER1';
             fm.currentQuestionIdx = 0;
@@ -475,25 +508,25 @@
             fm.player1.score = 0;
             fm.player2.score = 0;
             fm.totalScore = 0;
-            log(`Fast Money started — ${fm.selectedQuestions.length} questions, Player 1 begins!`);
+            log(`Fast Money started - ${fm.selectedQuestions.length} questions, Player 1 begins!`);
             syncAndBroadcast();
         };
 
         window._fmSelectAnswer = (playerNum, qIdx, ansIdx) => {
             const fm = state.fastMoney;
             const ans = fm.selectedQuestions[qIdx].answers[ansIdx];
-            let points = ans.points;
-            let isDuplicate = false;
             if (playerNum === 2) {
                 const p1Ans = fm.player1.answers[qIdx];
-                if (p1Ans && p1Ans.ansIdx === ansIdx) { isDuplicate = true; points = 0; }
+                if (p1Ans && p1Ans.ansIdx === ansIdx) {
+                    toast('That answer was already given — pick a different one!', 'warn');
+                    return;
+                }
             }
             pushHistory();
-            const record = { ansIdx, text: ans.text, points, isDuplicate };
+            const record = { ansIdx, text: ans.text, points: ans.points, isDuplicate: false };
             if (playerNum === 1) fm.player1.answers[qIdx] = record;
             else fm.player2.answers[qIdx] = record;
-            if (isDuplicate) toast('Duplicate answer — 0 points!', 'warn');
-            log(`P${playerNum} Q${qIdx + 1}: "${ans.text}" — ${isDuplicate ? 'DUPE 0' : points} pts`);
+            log(`P${playerNum} Q${qIdx + 1}: "${ans.text}" - ${ans.points} pts`);
             fmAdvance(playerNum);
             syncAndBroadcast();
         };
@@ -504,20 +537,57 @@
             const record = { ansIdx: null, text: 'No answer', points: 0, isDuplicate: false };
             if (playerNum === 1) fm.player1.answers[qIdx] = record;
             else fm.player2.answers[qIdx] = record;
-            log(`P${playerNum} Q${qIdx + 1}: Pass — 0 pts`);
+            log(`P${playerNum} Q${qIdx + 1}: Pass - 0 pts`);
             fmAdvance(playerNum);
             syncAndBroadcast();
         };
 
+        function stopFMTimer() {
+            if (fmTimer) { clearInterval(fmTimer); fmTimer = null; }
+        }
+
+        function fmTimeOut() {
+            stopFMTimer();
+            const playerNum = fmCurrentPlayer;
+            pushHistory();
+            const fm = state.fastMoney;
+            fmInit(fm);
+            const answers = playerNum === 1 ? fm.player1.answers : fm.player2.answers;
+            for (let i = 0; i < fm.selectedQuestions.length; i++) {
+                if (!answers[i]) {
+                    answers[i] = { ansIdx: null, text: '—', points: 0, isDuplicate: false };
+                }
+            }
+            if (playerNum === 1) {
+                fm.player1.score = fm.player1.answers.reduce((s, a) => s + (a ? a.points : 0), 0);
+                fm.fmPhase = 'PLAYER2_PREP';
+            } else {
+                fm.player1.score = fm.player1.answers.reduce((s, a) => s + (a ? a.points : 0), 0);
+                fm.player2.score = fm.player2.answers.reduce((s, a) => s + (a ? a.points : 0), 0);
+                fm.totalScore = fm.player1.score + fm.player2.score;
+                fm.fmPhase = 'COMPLETE';
+            }
+            log(`Player ${playerNum}: time out!`);
+            toast(`Player ${playerNum} timed out!`, 'warn');
+            syncAndBroadcast();
+        }
+
+        window._setFMTimer = (secs) => {
+            if (!state.fastMoney) state.fastMoney = { ...defaultState().fastMoney };
+            state.fastMoney.timerSeconds = Math.max(5, Math.min(300, secs || 20));
+        };
+
         window._startPlayer2 = () => {
+            stopFMTimer();
             pushHistory();
             state.fastMoney.fmPhase = 'PLAYER2';
             state.fastMoney.currentQuestionIdx = 0;
-            log('Fast Money — Player 2 begins!');
+            log('Fast Money - Player 2 begins!');
             syncAndBroadcast();
         };
 
         window._backFromFastMoney = () => {
+            stopFMTimer();
             pushHistory();
             state.phase = PHASES.IDLE;
             state.fastMoney = { ...defaultState().fastMoney };
@@ -527,12 +597,13 @@
         };
 
         window._endFastMoney = () => {
+            stopFMTimer();
             pushHistory();
             state.phase = PHASES.GAME_OVER;
             state.winner = state.scores.team1 > state.scores.team2 ? 'team1' :
                 state.scores.team2 > state.scores.team1 ? 'team2' : null;
             state.fastMoney.active = false;
-            log('Fast Money complete — Game over!');
+            log('Fast Money complete - Game over!');
             saveGameHistory({ scores: state.scores, teamNames: state.teamNames, round: state.round });
             syncAndBroadcast();
         };
@@ -602,6 +673,7 @@
             if (state.phase === PHASES.FACE_OFF)
                 return state.faceOffFirstTeam ? 'FACE_OFF' : 'BUZZER_WAITING';
             if (state.phase === PHASES.FACE_OFF_ANSWER) return 'PLAY_OR_PASS';
+            if (state.phase === PHASES.FACE_OFF_EXHAUSTED) return 'FACE_OFF_EXHAUSTED';
             if (state.phase === PHASES.PLAY) return 'PLAY';
             if (state.phase === PHASES.STEAL) return 'STEAL';
             if (state.phase === PHASES.ROUND_COMPLETE) return 'ROUND_COMPLETE';
@@ -632,6 +704,7 @@
                 QUESTION_SELECTION: renderQuestionSelection,
                 BUZZER_WAITING: renderBuzzerWaiting,
                 FACE_OFF: renderFaceOff,
+                FACE_OFF_EXHAUSTED: renderFaceOffExhausted,
                 PLAY_OR_PASS: renderPlayOrPass,
                 PLAY: renderPlay,
                 STEAL: renderSteal,
@@ -669,6 +742,13 @@
                             value="${state.teamNames.team2 !== 'Team 2' ? state.teamNames.team2 : ''}"
                             class="w-full bg-gray-800 border-2 border-gray-600 rounded-xl px-4 py-3 text-lg text-white focus:outline-none focus:border-yellow-500 transition-colors" />
                     </div>
+                    <div>
+                        <label class="text-xs text-gray-400 uppercase tracking-wider mb-1.5 block">Players per team</label>
+                        <input id="inpPlayers" type="number" min="1" max="10" placeholder="e.g. 4"
+                            value="${state.playersPerTeam || 4}"
+                            class="w-full bg-gray-800 border-2 border-gray-600 rounded-xl px-4 py-3 text-lg text-white focus:outline-none focus:border-yellow-500 transition-colors" />
+                        <p class="text-xs text-gray-500 mt-1">Face-off cycles before moderator decides</p>
+                    </div>
                 </div>
                 <button id="btnSave"
                     class="w-full bg-yellow-500 hover:bg-yellow-400 active:bg-yellow-600 text-gray-900 font-black text-xl py-5 rounded-2xl transition-colors">
@@ -678,29 +758,50 @@
             const save = () => {
                 const t1 = el.querySelector('#inp1').value.trim();
                 const t2 = el.querySelector('#inp2').value.trim();
+                const ppt = parseInt(el.querySelector('#inpPlayers').value, 10);
                 if (!t1 || !t2) { toast('Both team names are required.', 'error'); return; }
+                if (isNaN(ppt) || ppt < 1) { toast('Players per team must be at least 1.', 'error'); return; }
                 pushHistory();
                 state.teamNames.team1 = t1;
                 state.teamNames.team2 = t2;
+                state.playersPerTeam = ppt;
                 namesSet = true;
                 gameStarted = true;
                 uiStep = 'ROUND_SETUP';
-                log(`Teams: "${t1}" vs "${t2}"`);
+                log(`Teams: "${t1}" vs "${t2}" (${ppt} players each)`);
                 syncAndBroadcast();
             };
             el.querySelector('#btnSave').addEventListener('click', save);
-            el.querySelectorAll('input').forEach(i => i.addEventListener('keydown', e => { if (e.key === 'Enter') save(); }));
+            el.querySelectorAll('input[type="text"]').forEach(i => i.addEventListener('keydown', e => { if (e.key === 'Enter') save(); }));
             return el;
         }
 
         function renderRoundSetup() {
+            const isRound1 = state.round === 1;
+            const isTied = state.scores.team1 === state.scores.team2;
+            const canFastMoney = !isRound1 && !isTied;
+            const fmReason = isRound1 ? 'Play a VS round first' : isTied ? 'Scores must not be tied' : '';
+
             const el = document.createElement('div');
             el.className = 'phase-enter';
             el.innerHTML = `
-                <div class="text-center mb-10">
+                <div class="text-center mb-8">
                     <p class="text-gray-400 uppercase tracking-widest text-sm mb-2">Round</p>
                     <p class="text-9xl font-black text-white leading-none">${state.round}</p>
                     <p class="text-gray-500 mt-3 text-sm">${getTeamName('team1')} vs ${getTeamName('team2')}</p>
+                </div>
+                <div class="flex items-center justify-center gap-4 mb-6 bg-gray-800 rounded-2xl px-5 py-4 border border-gray-700">
+                    <label class="text-sm text-gray-300 font-semibold uppercase tracking-wider">Point Multiplier</label>
+                    <div class="flex gap-2">
+                        ${[1,2,3].map(n => `
+                        <button id="multBtn${n}" onclick="window._setMultiplier(${n})"
+                            class="w-14 h-14 rounded-xl font-black text-xl transition-colors
+                            ${(state.pointMultiplier || 1) === n
+                                ? 'bg-yellow-500 text-gray-900'
+                                : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}">
+                            ${n}×
+                        </button>`).join('')}
+                    </div>
                 </div>
                 <p class="text-center text-gray-400 text-sm mb-4">Select round type</p>
                 <div class="grid grid-cols-2 gap-4">
@@ -708,14 +809,30 @@
                         class="bg-blue-700 hover:bg-blue-600 active:bg-blue-800 text-white font-black text-2xl py-10 rounded-2xl transition-colors">
                         VS Round
                     </button>
-                    <button onclick="window._selectRoundType('fastmoney')"
-                        class="bg-pink-700 hover:bg-pink-600 active:bg-pink-800 text-white font-black text-2xl py-10 rounded-2xl transition-colors">
-                        Fast Money
+                    <button ${canFastMoney ? "onclick=\"window._selectRoundType('fastmoney')\"" : 'disabled'}
+                        class="${canFastMoney
+                    ? 'bg-pink-700 hover:bg-pink-600 active:bg-pink-800 text-white'
+                    : 'bg-gray-800 text-gray-500 cursor-not-allowed'} font-black text-2xl py-10 rounded-2xl transition-colors flex flex-col items-center justify-center gap-1">
+                        <span>Fast Money</span>
+                        ${fmReason ? `<span class="text-xs font-normal opacity-70">${fmReason}</span>` : ''}
                     </button>
                 </div>
             `;
             return el;
         }
+
+        window._setMultiplier = (n) => {
+            state.pointMultiplier = n;
+            // Update button styles without full re-render
+            [1, 2, 3].forEach(i => {
+                const btn = document.getElementById(`multBtn${i}`);
+                if (!btn) return;
+                btn.className = `w-14 h-14 rounded-xl font-black text-xl transition-colors ${i === n
+                    ? 'bg-yellow-500 text-gray-900'
+                    : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`;
+            });
+            log(`Multiplier set to ${n}×`);
+        };
 
         function renderQuestionSelection() {
             const el = document.createElement('div');
@@ -724,7 +841,7 @@
                 <div class="flex items-center gap-3 mb-6">
                     <button onclick="window._backToRoundSetup()"
                         class="text-gray-400 hover:text-white text-sm px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 transition-colors">←</button>
-                    <h2 class="text-xl font-black text-white">Round ${state.round} — Select Question</h2>
+                    <h2 class="text-xl font-black text-white">Round ${state.round} - Select Question</h2>
                 </div>
                 <div class="space-y-4">
                     <div>
@@ -734,14 +851,9 @@
                             <option value="">Loading questions…</option>
                         </select>
                     </div>
-                    <div class="flex items-center gap-3">
-                        <label class="text-xs text-gray-400 uppercase tracking-wider">Multiplier</label>
-                        <select id="multSelect"
-                            class="bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-yellow-500">
-                            <option value="1">1×</option>
-                            <option value="2">2×</option>
-                            <option value="3">3×</option>
-                        </select>
+                    <div class="flex items-center justify-between bg-gray-800 rounded-xl px-4 py-2 border border-gray-700">
+                        <span class="text-xs text-gray-400 uppercase tracking-wider">Multiplier</span>
+                        <span class="text-yellow-400 font-black text-lg">${state.pointMultiplier || 1}×</span>
                     </div>
                     <button id="btnLoad"
                         class="w-full bg-yellow-500 hover:bg-yellow-400 active:bg-yellow-600 text-gray-900 font-black text-xl py-5 rounded-2xl transition-colors mt-2">
@@ -749,9 +861,6 @@
                     </button>
                 </div>
             `;
-            const multSel = el.querySelector('#multSelect');
-            multSel.value = state.pointMultiplier || 1;
-            multSel.addEventListener('change', e => { state.pointMultiplier = parseInt(e.target.value) || 1; });
             el.querySelector('#btnLoad').addEventListener('click', () => {
                 const sel = el.querySelector('#questionSelect');
                 const id = parseInt(sel.value);
@@ -760,6 +869,8 @@
                 if (!q) return;
                 pushHistory();
                 state.currentQuestion = { ...q, answers: q.answers.map(a => ({ ...a, revealed: false })) };
+                if (!state.usedQuestions) state.usedQuestions = [];
+                if (!state.usedQuestions.includes(q.id)) state.usedQuestions.push(q.id);
                 state.revealedAnswers = [];
                 state.roundPoints = 0;
                 state.strikes = 0;
@@ -769,10 +880,11 @@
                 state.faceOffAnswers = { team1: null, team2: null };
                 state.faceOffFirstTeam = null;
                 state.faceOffWinner = null;
+                state.faceOffCycles = 0;
                 state.currentTeam = null;
                 state.answerEnabled = false;
                 gameStarted = true;
-                log(`Loaded: "${q.question}" — Face-off begins!`);
+                log(`Loaded: "${q.question}" - Face-off begins!`);
                 syncAndBroadcast();
             });
             return el;
@@ -823,7 +935,7 @@
             if (activeTeam === secondTeam && faceOffAnswers[faceOffFirstTeam] !== null) {
                 const fa = faceOffAnswers[faceOffFirstTeam];
                 const faText = fa === 'wrong' ? 'Not on the board'
-                    : `"${currentQuestion.answers[fa].text}" — ${currentQuestion.answers[fa].points} pts`;
+                    : `"${currentQuestion.answers[fa].text}" - ${currentQuestion.answers[fa].points} pts`;
                 contextHtml = `<p class="text-xs text-gray-500 text-center mb-3">${getTeamName(faceOffFirstTeam)}: ${faText}</p>`;
             }
 
@@ -843,7 +955,8 @@
             el.className = 'phase-enter';
             el.innerHTML = `
                 <div class="text-center mb-5">
-                    <p class="text-orange-400 uppercase tracking-widest text-xs font-bold mb-2">Face-Off — ${getTeamName(faceOffFirstTeam)} buzzed first</p>
+                    <p class="text-orange-400 uppercase tracking-widest text-xs font-bold mb-1">Face-Off — ${getTeamName(faceOffFirstTeam)} buzzed first</p>
+                    ${(state.faceOffCycles || 0) > 0 ? `<p class="text-red-400 text-xs font-semibold mb-1">${getTeamName(activeTeam)} Team Player ${state.faceOffCycles + 1} / ${state.playersPerTeam || 4}</p>` : ''}
                     <p class="text-white font-bold text-xl leading-snug italic">"${currentQuestion.question}"</p>
                 </div>
                 <div class="bg-gray-900 rounded-2xl p-4 border border-orange-800">
@@ -867,7 +980,7 @@
                 <div class="text-center mb-10">
                     <p class="text-gray-400 uppercase tracking-widest text-sm mb-3">Face-Off Winner</p>
                     <p class="text-5xl font-black text-green-400">${getTeamName(w)}</p>
-                    <p class="text-gray-500 text-sm mt-3">Waiting for ${getTeamName(w)} to choose — or select below</p>
+                    <p class="text-gray-500 text-sm mt-3">Waiting for ${getTeamName(w)} to choose - or select below</p>
                 </div>
                 <div class="grid grid-cols-2 gap-4">
                     <button onclick="window._plays()"
@@ -878,6 +991,50 @@
             `;
             return el;
         }
+
+        function renderFaceOffExhausted() {
+            const firstTeam = state.faceOffFirstTeam;
+            const maxCycles = state.playersPerTeam || 4;
+            const el = document.createElement('div');
+            el.className = 'phase-enter';
+            el.innerHTML = `
+                <div class="text-center mb-6">
+                    <p class="text-red-400 uppercase tracking-widest text-sm mb-2">Face-Off Exhausted</p>
+                    <p class="text-gray-300 text-base font-semibold">All ${maxCycles} cycles completed — both teams got wrong answers every time.</p>
+                    <p class="text-gray-500 text-sm mt-2">First buzzer: <span class="text-yellow-400 font-bold">${getTeamName(firstTeam)}</span></p>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <button onclick="window._exhaustedTeamPlays()"
+                        class="bg-green-700 hover:bg-green-600 active:bg-green-800 text-white font-bold text-lg py-8 rounded-2xl transition-colors leading-tight">
+                        <div class="text-2xl font-black mb-1">PLAY</div>
+                        <div class="text-xs opacity-80">${getTeamName(firstTeam)} plays</div>
+                    </button>
+                    <button onclick="window._exhaustedEndRound()"
+                        class="bg-gray-700 hover:bg-gray-600 active:bg-gray-800 text-white font-bold text-lg py-8 rounded-2xl transition-colors leading-tight">
+                        <div class="text-2xl font-black mb-1">END</div>
+                        <div class="text-xs opacity-80">End this round</div>
+                    </button>
+                </div>
+            `;
+            return el;
+        }
+
+        window._exhaustedTeamPlays = function () {
+            pushHistory();
+            state.currentTeam = state.faceOffFirstTeam;
+            state.phase = PHASES.PLAY;
+            state.strikes = 0;
+            state.answerEnabled = true;
+            log(`Moderator chose: ${getTeamName(state.currentTeam)} plays after exhausted face-off.`);
+            syncAndBroadcast();
+        };
+
+        window._exhaustedEndRound = function () {
+            pushHistory();
+            log('Moderator ended round after exhausted face-off — no points awarded.');
+            state.phase = PHASES.ROUND_COMPLETE;
+            syncAndBroadcast();
+        };
 
         function renderAnswerBoard(q, allowReveal) {
             if (!q) return '';
@@ -947,7 +1104,7 @@
                 <div class="text-center">
                     <p class="text-gray-400 uppercase tracking-widest text-sm mb-2">Steal Attempt</p>
                     <p class="text-4xl font-black text-purple-400">${getTeamName(stealer)}</p>
-                    <p class="text-gray-500 text-sm mt-1">One chance — <span class="text-yellow-400 font-bold">${state.roundPoints} pts</span> on the line</p>
+                    <p class="text-gray-500 text-sm mt-1">One chance - <span class="text-yellow-400 font-bold">${state.roundPoints} pts</span> on the line</p>
                 </div>
 
                 <div class="bg-gray-800 rounded-2xl p-4 border border-gray-700">
@@ -1073,32 +1230,59 @@
             fmInit(fm);
             const selected = fm.selectedQuestions;
 
+            const usedIds = state.usedQuestions || [];
+            const topTwoSum = selected.reduce((sum, q) => {
+                const t1 = q.answers[0] ? q.answers[0].points : 0;
+                const t2 = q.answers[1] ? q.answers[1].points : 0;
+                return sum + t1 + t2;
+            }, 0);
+            const meetsThreshold = topTwoSum >= 200;
+
             const qListHtml = allQuestions.length ? allQuestions.map(q => {
                 const isSel = selected.some(sq => sq.id === q.id);
-                const isDis = !isSel && selected.length >= 5;
-                return `<label class="flex items-start gap-3 p-3 rounded-xl cursor-pointer border transition-colors
-                    ${isSel ? 'bg-pink-950 border-pink-600' : isDis ? 'bg-gray-800 border-gray-700 opacity-40 cursor-not-allowed' : 'bg-gray-800 border-gray-700 hover:border-gray-500'}">
+                const isUsed = usedIds.includes(q.id);
+                const isDis = (!isSel && selected.length >= 5) || (!isSel && isUsed);
+                return `<label class="flex items-start gap-3 p-3 rounded-xl border transition-colors
+                    ${isSel ? 'bg-pink-950 border-pink-600 cursor-pointer' : isDis ? 'bg-gray-800 border-gray-700 opacity-40 cursor-not-allowed' : 'bg-gray-800 border-gray-700 hover:border-gray-500 cursor-pointer'}">
                     <input type="checkbox" value="${q.id}" ${isSel ? 'checked' : ''} ${isDis ? 'disabled' : ''}
                         onchange="window._toggleFMQuestion(${q.id})" class="mt-0.5 accent-pink-500 w-4 h-4 flex-shrink-0">
-                    <span class="text-sm text-white leading-snug">${q.id}. ${q.question}</span>
+                    <span class="text-sm leading-snug flex-1 ${isDis && isUsed ? 'text-gray-500' : 'text-white'}">${q.id}. ${q.question}</span>
+                    ${isUsed ? '<span class="text-xs bg-gray-700 text-gray-400 px-1.5 py-0.5 rounded font-bold flex-shrink-0">used</span>' : ''}
                 </label>`;
             }).join('') : '<p class="text-gray-500 text-sm text-center py-4">Loading questions…</p>';
 
-            const canStart = selected.length > 0;
+            const canStart = selected.length > 0 && meetsThreshold;
+            const startDisabledReason = !selected.length ? 'Select at least 1 question'
+                : !meetsThreshold ? `Need ≥200 pts potential (${topTwoSum} now)` : '';
             const el = document.createElement('div');
             el.className = 'phase-enter space-y-4';
             el.innerHTML = `
                 <div class="flex items-center gap-3">
                     <button onclick="window._backFromFastMoney()"
                         class="text-gray-400 hover:text-white text-sm px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 transition-colors">←</button>
-                    <h2 class="text-xl font-black text-white">Fast Money — Select Questions</h2>
+                    <h2 class="text-xl font-black text-white">Fast Money - Select Questions</h2>
                 </div>
-                <p class="text-gray-400 text-sm">${selected.length} / 5 questions selected</p>
-                <div class="space-y-2 max-h-80 overflow-y-auto">${qListHtml}</div>
+                <div class="flex items-center justify-between">
+                    <p class="text-gray-400 text-sm">${selected.length} / 5 questions selected</p>
+                    ${selected.length > 0 ? `<p class="text-sm font-bold ${meetsThreshold ? 'text-green-400' : 'text-red-400'}">
+                        Top-2 potential: ${topTwoSum} pts ${meetsThreshold ? '✓' : '(need 200)'}
+                    </p>` : ''}
+                </div>
+                <div class="space-y-2 max-h-64 overflow-y-auto">${qListHtml}</div>
+                <div class="flex items-center justify-between bg-gray-800 rounded-xl px-4 py-3 border border-gray-700">
+                    <div>
+                        <p class="text-sm text-gray-300 font-semibold">Seconds per player</p>
+                        <p class="text-xs text-gray-500">Timer auto-passes unanswered Qs</p>
+                    </div>
+                    <input type="number" min="5" max="300" value="${state.fastMoney ? (state.fastMoney.timerSeconds || 20) : 20}"
+                        oninput="window._setFMTimer(parseInt(this.value))"
+                        class="w-20 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-right font-black text-lg focus:outline-none focus:border-pink-500" />
+                </div>
                 <button onclick="window._startFastMoney()" ${canStart ? '' : 'disabled'}
-                    class="w-full font-black text-xl py-5 rounded-2xl transition-colors
+                    class="w-full font-black text-xl py-5 rounded-2xl transition-colors flex flex-col items-center gap-1
                     ${canStart ? 'bg-pink-700 hover:bg-pink-600 active:bg-pink-800 text-white' : 'bg-gray-800 text-gray-600 cursor-not-allowed'}">
-                    Start Fast Money (${selected.length} Q${selected.length !== 1 ? 's' : ''})
+                    <span>Start Fast Money (${selected.length} Q${selected.length !== 1 ? 's' : ''})</span>
+                    ${startDisabledReason ? `<span class="text-xs font-normal opacity-70">${startDisabledReason}</span>` : ''}
                 </button>
             `;
             return el;
@@ -1112,27 +1296,50 @@
             const total = fm.selectedQuestions.length;
             const p1Ans = playerNum === 2 ? (fm.player1.answers[qIdx] || null) : null;
 
+            // Start countdown if not already running
+            if (!fmTimer) {
+                fmCurrentPlayer = playerNum;
+                fmSecondsLeft = fm.timerSeconds || 20;
+                fmTimer = setInterval(() => {
+                    fmSecondsLeft--;
+                    const timerEl = document.getElementById('fmTimerDisplay');
+                    if (timerEl) {
+                        timerEl.textContent = fmSecondsLeft;
+                        timerEl.className = `text-5xl font-black tabular-nums leading-none ${
+                            fmSecondsLeft <= 5 ? 'text-red-400' : fmSecondsLeft <= 10 ? 'text-orange-400' : 'text-white'
+                        }`;
+                    }
+                    if (fmSecondsLeft <= 0) fmTimeOut();
+                }, 1000);
+            }
+
+            const timerSecs = fmSecondsLeft || fm.timerSeconds || 20;
+            const timerColor = timerSecs <= 5 ? 'text-red-400' : timerSecs <= 10 ? 'text-orange-400' : 'text-white';
+
             const p1ContextHtml = p1Ans ? `
                 <div class="flex items-center justify-between bg-gray-700 rounded-xl px-4 py-2.5 mb-3">
                     <span class="text-xs text-gray-400 uppercase tracking-wider">Player 1 said</span>
-                    <span class="text-sm font-bold ${p1Ans.points > 0 ? 'text-green-400' : 'text-gray-400'}">
-                        ${p1Ans.text}${p1Ans.points > 0 ? ` — ${p1Ans.points}pts` : ''}
-                    </span>
+                    <span class="text-sm font-bold text-green-400">${p1Ans.text} — ${p1Ans.points}pts</span>
                 </div>` : '';
 
             const answerBtns = q.answers.map((ans, idx) => {
                 const isDupe = p1Ans && p1Ans.ansIdx === idx;
+                if (isDupe) {
+                    return `<div class="w-full flex items-center gap-3 px-4 py-3 rounded-xl border bg-gray-900 border-gray-700 opacity-40 cursor-not-allowed">
+                        <span class="w-6 text-center text-sm text-gray-600">${idx + 1}</span>
+                        <span class="flex-1 font-semibold text-gray-500">${ans.text}</span>
+                        <span class="text-sm font-bold text-gray-600">${ans.points}pts</span>
+                        <span class="text-xs bg-gray-700 text-gray-500 px-2 py-0.5 rounded-full font-bold">taken</span>
+                    </div>`;
+                }
                 return `<button onclick="window._fmSelectAnswer(${playerNum}, ${qIdx}, ${idx})"
-                    class="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left transition-colors border
-                    ${isDupe ? 'bg-yellow-900 border-yellow-600 text-yellow-100' : 'bg-gray-700 hover:bg-gray-600 border-gray-600 text-white'}">
+                    class="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left transition-colors border bg-gray-700 hover:bg-gray-600 border-gray-600 text-white active:bg-gray-500">
                     <span class="w-6 text-center text-sm text-gray-400">${idx + 1}</span>
                     <span class="flex-1 font-semibold">${ans.text}</span>
                     <span class="text-sm font-bold text-gray-400">${ans.points}pts</span>
-                    ${isDupe ? '<span class="text-xs bg-yellow-600 text-yellow-100 px-2 py-0.5 rounded-full font-bold">DUPE</span>' : ''}
                 </button>`;
             }).join('');
 
-            // Progress dots
             const dots = fm.selectedQuestions.map((_, i) =>
                 `<span class="w-3 h-3 rounded-full ${i < qIdx ? 'bg-pink-500' : i === qIdx ? 'bg-white' : 'bg-gray-600'}"></span>`
             ).join('');
@@ -1140,12 +1347,18 @@
             const el = document.createElement('div');
             el.className = 'phase-enter space-y-4';
             el.innerHTML = `
-                <div>
-                    <div class="flex items-center justify-between mb-2">
-                        <p class="text-pink-400 uppercase tracking-widest text-xs font-bold">Player ${playerNum} — Q${qIdx + 1} of ${total}</p>
-                        <div class="flex gap-1.5">${dots}</div>
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-pink-400 uppercase tracking-widest text-xs font-bold mb-1">Player ${playerNum} — Q${qIdx + 1} of ${total}</p>
+                        <p class="text-white font-bold text-lg leading-snug">"${q.question}"</p>
                     </div>
-                    <p class="text-white font-bold text-xl leading-snug">"${q.question}"</p>
+                    <div class="flex flex-col items-center bg-gray-900 rounded-2xl px-4 py-2 border border-pink-900 flex-shrink-0 ml-3">
+                        <span id="fmTimerDisplay" class="${timerColor} text-5xl font-black tabular-nums leading-none">${timerSecs}</span>
+                        <span class="text-xs text-gray-500 mt-0.5">sec</span>
+                    </div>
+                </div>
+                <div class="flex gap-2 items-center">
+                    <div class="flex gap-1.5">${dots}</div>
                 </div>
                 <div class="bg-gray-800 rounded-2xl p-4 border border-gray-700 space-y-2">
                     ${p1ContextHtml}
@@ -1168,7 +1381,7 @@
                 const q = fm.selectedQuestions[idx];
                 return `<div class="flex items-center justify-between py-1.5 text-sm border-b border-gray-700 last:border-0">
                     <span class="text-gray-400 flex-1 truncate pr-3">${q.question.length > 45 ? q.question.slice(0, 42) + '...' : q.question}</span>
-                    <span class="font-bold ${ans && ans.points > 0 ? 'text-green-400' : 'text-gray-500'} flex-shrink-0">${ans ? ans.points + ' pts' : '—'}</span>
+                    <span class="font-bold ${ans && ans.points > 0 ? 'text-green-400' : 'text-gray-500'} flex-shrink-0">${ans ? ans.points + ' pts' : '-'}</span>
                 </div>`;
             }).join('');
 
@@ -1208,7 +1421,7 @@
                 const ans = answers[idx];
                 return `<tr class="border-t border-gray-700">
                     <td class="py-1.5 pr-2 text-gray-400 text-xs">${q.question.length > 32 ? q.question.slice(0, 29) + '...' : q.question}</td>
-                    <td class="py-1.5 pr-2 text-sm font-semibold ${ans && ans.points > 0 && !ans.isDuplicate ? 'text-white' : 'text-gray-500'}">${ans ? ans.text : '—'}</td>
+                    <td class="py-1.5 pr-2 text-sm font-semibold ${ans && ans.points > 0 && !ans.isDuplicate ? 'text-white' : 'text-gray-500'}">${ans ? ans.text : '-'}</td>
                     <td class="py-1.5 text-right font-black text-sm ${ans && ans.isDuplicate ? 'text-yellow-400' : ans && ans.points > 0 ? 'text-green-400' : 'text-gray-500'}">
                         ${ans ? (ans.isDuplicate ? 'DUPE' : ans.points + 'pts') : '0pts'}
                     </td>
@@ -1222,7 +1435,7 @@
                     <p class="text-5xl mb-2">${didWin ? '🏆' : '🎯'}</p>
                     <p class="text-4xl font-black ${didWin ? 'text-yellow-400' : 'text-white'}">${total} Points</p>
                     <p class="text-lg font-bold mt-1 ${didWin ? 'text-green-400' : 'text-red-400'}">
-                        ${didWin ? 'Fast Money Win!' : `Need ${WIN} — ${WIN - total} pts short`}
+                        ${didWin ? 'Fast Money Win!' : `Need ${WIN} - ${WIN - total} pts short`}
                     </p>
                 </div>
                 <div class="grid grid-cols-2 gap-3">
@@ -1240,11 +1453,11 @@
                         <p class="text-xs text-gray-300 uppercase tracking-wider font-semibold">Full Breakdown</p>
                     </div>
                     <div class="px-4 py-2 border-b border-gray-600">
-                        <p class="text-xs font-bold text-pink-400 uppercase tracking-wider mb-1">Player 1 — ${p1Score}pts</p>
+                        <p class="text-xs font-bold text-pink-400 uppercase tracking-wider mb-1">Player 1 - ${p1Score}pts</p>
                         <table class="w-full">${buildTable(fm.player1.answers)}</table>
                     </div>
                     <div class="px-4 py-2">
-                        <p class="text-xs font-bold text-pink-400 uppercase tracking-wider mb-1">Player 2 — ${p2Score}pts</p>
+                        <p class="text-xs font-bold text-pink-400 uppercase tracking-wider mb-1">Player 2 - ${p2Score}pts</p>
                         <table class="w-full">${buildTable(fm.player2.answers)}</table>
                     </div>
                 </div>

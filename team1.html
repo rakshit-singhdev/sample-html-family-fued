@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Family Feud — Team 1</title>
+    <title>Team 1</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         :root {
@@ -149,7 +149,7 @@
 
     <!-- Play or Pass (shown when this team won the face-off) -->
     <div id="playPassSection" class="hidden px-4 pt-4">
-        <p class="text-center text-xs text-yellow-400 font-bold uppercase tracking-widest mb-3">You won the face-off —
+        <p class="text-center text-xs text-yellow-400 font-bold uppercase tracking-widest mb-3">You won the face-off -
             Play or Pass?</p>
         <div class="grid grid-cols-2 gap-3">
             <button id="btnPlay"
@@ -355,6 +355,34 @@
 
             // Answer board
             renderAnswers();
+
+            // Fast Money overlay
+            const existingFmOverlay = document.getElementById('fmOverlay');
+            if (state.phase === PHASES.FAST_MONEY) {
+                if (!existingFmOverlay) {
+                    const fmWinner = state.scores.team1 > state.scores.team2 ? 'team1' : 'team2';
+                    const isWinner = fmWinner === TEAM;
+                    const div = document.createElement('div');
+                    div.id = 'fmOverlay';
+                    div.className = `fixed inset-0 z-40 flex items-center justify-center ${isWinner ? 'bg-pink-950' : 'bg-gray-950'} bg-opacity-97`;
+                    div.innerHTML = isWinner ? `
+                        <div class="text-center p-8">
+                            <div class="text-8xl mb-4">⭐</div>
+                            <h2 class="text-5xl font-black text-pink-400 mb-3">FAST MONEY!</h2>
+                            <p class="text-white text-xl font-semibold">Your team is playing!</p>
+                            <p class="text-pink-300 text-lg mt-3">${myName}: ${state.scores[TEAM]} pts</p>
+                        </div>` : `
+                        <div class="text-center p-8">
+                            <div class="text-8xl mb-4">😔</div>
+                            <h2 class="text-5xl font-black text-gray-400 mb-3">You Lost</h2>
+                            <p class="text-gray-300 text-xl font-semibold">Better luck next time!</p>
+                            <p class="text-gray-500 text-lg mt-3">${myName}: ${state.scores[TEAM]} pts</p>
+                        </div>`;
+                    document.body.appendChild(div);
+                }
+            } else if (existingFmOverlay) {
+                existingFmOverlay.remove();
+            }
 
             // Game over overlay
             if (state.phase === PHASES.GAME_OVER && !document.getElementById('goOverlay')) {

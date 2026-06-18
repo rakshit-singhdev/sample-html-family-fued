@@ -1,4 +1,4 @@
-// game.js — shared state engine (ES module)
+// game.js  shared state engine (ES module)
 const QUESTIONS_API =
     'https://sheetdb.io/api/v1/d55vc27hfllg5';
 
@@ -11,6 +11,7 @@ export const PHASES = {
     IDLE: 'IDLE',
     FACE_OFF: 'FACE_OFF',
     FACE_OFF_ANSWER: 'FACE_OFF_ANSWER',
+    FACE_OFF_EXHAUSTED: 'FACE_OFF_EXHAUSTED',
     PLAY: 'PLAY',
     STEAL: 'STEAL',
     FAST_MONEY: 'FAST_MONEY',
@@ -160,6 +161,9 @@ export function defaultState() {
         faceOffAnswers: { team1: null, team2: null },
         faceOffWinner: null,
         faceOffFirstTeam: null,
+        faceOffCycles: 0,
+        playersPerTeam: 4,
+        usedQuestions: [],
         fastMoney: {
             active: false,
             player1: { answers: [], score: 0 },
